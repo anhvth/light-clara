@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from lamb.model import LaMBModel
 
 
-def train(  # noqa: PLR0912,PLR0915
+def train(  # noqa: PLR0915
     model: "LaMBModel",
     dataset: Any,
     tokenizer: "PreTrainedTokenizer",
@@ -165,9 +165,8 @@ def train(  # noqa: PLR0912,PLR0915
             was_training = model.training
             try:
                 dbg_stats: dict[str, Any] = {}
-                ok = False
                 if debug_txt is not None:
-                    ok = debug_reproduce_training(
+                    debug_reproduce_training(
                         model,
                         txt=debug_txt,
                         verbose=config.verbose,

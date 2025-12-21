@@ -34,39 +34,83 @@ def pick_debug_every_steps() -> int:
 
 
 @dataclass
-class LaMBConfig:
+class ClaraConfig:
+    """CLaRa (Compressing Language for Retrieval Augmentation) Configuration.
+
+    Supports three training stages:
+    - stage1: Compression pretraining (QA + paraphrase + MSE loss)
+    - stage1_2: Compression instruction tuning
+    - stage2: End-to-end retrieval training (optional)
+    """
+
+    # Model
     model_name: str = "Qwen/Qwen3-0.6B"
-    num_memory_tokens: int = 1
 
-    compressor_lora_rank: int = 0
-    compressor_lora_alpha: int = 2
+    # Training stage
+    stage: str = "stage1"  # stage1, stage1_2, stage2
 
-    batch_size: int = 1
+    # Compression
+    compress_rate: int = 32  # Number of memory tokens per document
+    doc_max_length: int = 256  # Max tokens per document
+    use_compressor_mlp: bool = True  # Use MLP vs linear projection
+    compressor_mlp_hidden_dim: int | None = None  # Default: hidden_size * 4
+
+    # LoRA configuration
+    encoder_lora_rank: int = 16
+    decoder_lora_rank: int = 16
+    lora_alpha: int = 16
+    lora_dropout: float = 0.05
+
+    # Loss weights
+    use_mse_loss: bool = True
+    mse_weight: float = 0.1
+    use_paraphrase_loss: bool = True
+    paraphrase_weight: float = 1.0
+    qa_weight: float = 1.0
+
+    # Data
+    generation_top_k: int = 1  # Number of docs to compress per example
+    max_seq_len: int = 1024  # Max decoder sequence length
+
+    # Training
+    batch_size: int = 2
     learning_rate: float = 1e-4
-    kl_temperature: float = 1.0
-    ce_alpha: float = 1.0
+    max_steps: int = 10000
+    gradient_accumulation_steps: int = 1
+    max_grad_norm: float = 1.0
+
+    # Device
     device: str = field(default_factory=pick_device)
     dtype: torch.dtype = field(default_factory=lambda: pick_dtype(pick_device()))
     attn_implementation: str = field(
         default_factory=lambda: pick_attn_implementation(pick_device())
     )
-    max_seq_len: int = 512
-    max_steps: int = 10000
 
-    debug_every_steps: int = 1
-    debug_num_samples: int = 1
+    # Checkpointing
+    save_steps: int = 500
+    checkpoint_dir: str = "checkpoints"
+    load_from_checkpoint: str | None = None
+
+    # Evaluation & Logging
+    eval_steps: int = 100
+    do_eval: bool = False
     verbose: bool = False
 
+    # TensorBoard
     tensorboard: bool = field(default_factory=lambda: env_flag("LAMB_TENSORBOARD"))
     tensorboard_logdir: str = "logs/tensorboard"
     tensorboard_every_steps: int = 5
-    tensorboard_text_every_steps: int = 50
 
-    dataset_size: int = 20000
+    # Debug Mode
+    debug_mode: bool = False  # Enable debug features
+    debug_every_steps: int = 10  # Generate and print colored output every N steps
+    debug_num_samples: int = 3  # Number of samples to generate in debug
+    debug_repeat_dataset: int = 0  # Repeat dataset N times (0 = no repeat)
 
-    debug_sample_size: int = 1
-    debug_repeat_count: int = 50
+
+# Backward compatibility alias
+LaMBConfig = ClaraConfig
 
 
-def default_config() -> LaMBConfig:
-    return LaMBConfig()
+def default_config() -> ClaraConfig:
+    return ClaraConfig()

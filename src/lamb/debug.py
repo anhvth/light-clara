@@ -42,7 +42,7 @@ def _score_to_rgb(score: float) -> tuple[int, int, int]:
 
 
 @torch.no_grad()
-def debug_reproduce_training(  # noqa: PLR0912,PLR0915
+def debug_reproduce_training(  # noqa: PLR0915
     model: "LaMBModel",
     *,
     txt: str,

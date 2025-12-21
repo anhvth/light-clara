@@ -7,7 +7,7 @@ if TYPE_CHECKING:
 
 
 @torch.no_grad()
-def generate_student(  # noqa: PLR0912,PLR0915
+def generate_student(  # noqa: PLR0915
     model: "LaMBModel",
     *,
     en_text: str,

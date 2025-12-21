@@ -1,116 +1,97 @@
-import inspect
-from typing import Any
-
 import torch
 from torch import nn
-from transformers.cache_utils import DynamicCache
-
-from lamb.utils import apply_rotary_pos_emb
+from torch.nn import functional as F
 
 
-class VerticalLatentMemoryBridge(nn.Module):
-    def __init__(self, config: Any) -> None:
+class DocumentCompressor(nn.Module):
+    """Compresses documents into fixed-size memory token embeddings.
+
+    Based on Apple's CLaRa architecture:
+    - Encodes documents through base model with encoder adapter
+    - Mean-pools encoder hidden states
+    - Projects to num_memory_tokens embeddings via learnable projection
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        num_memory_tokens: int = 32,
+        use_mlp: bool = True,
+        mlp_hidden_dim: int | None = None,
+    ) -> None:
         super().__init__()
-        self.model_config = config
-        self.num_layers = config.num_hidden_layers
-        self.hidden_size = config.hidden_size
+        self.hidden_size = hidden_size
+        self.num_memory_tokens = num_memory_tokens
+        self.use_mlp = use_mlp
 
-        self.num_kv_heads = getattr(config, "num_key_value_heads", config.num_attention_heads)
-        calculated_head_dim = config.hidden_size // config.num_attention_heads
-
-        if hasattr(config, "head_dim"):
-            self.head_dim = config.head_dim
-        elif calculated_head_dim == 80:
-            print("[Bridge] Detected head_dim mismatch (80). Forcing head_dim=128 to match RoPE.")
-            self.head_dim = 128
+        if use_mlp:
+            mlp_hidden_dim = mlp_hidden_dim or hidden_size * 4
+            self.compress_mlp = nn.Sequential(
+                nn.Linear(hidden_size, mlp_hidden_dim, bias=False),
+                nn.GELU(),
+                nn.Linear(mlp_hidden_dim, num_memory_tokens * hidden_size, bias=False),
+            )
         else:
-            self.head_dim = calculated_head_dim
+            # Simple linear projection
+            self.compress_linear = nn.Linear(
+                hidden_size, num_memory_tokens * hidden_size, bias=False
+            )
 
-        self.layer_kv_dim = 2 * self.num_kv_heads * self.head_dim
-        print(
-            f"[Bridge] Vertical: {self.num_layers} layers x ({self.hidden_size} -> DIRECT -> {self.layer_kv_dim} [HeadDim: {self.head_dim}])"
-        )
+        # Layer norm for compressed representations
+        self.compress_norm = nn.LayerNorm(hidden_size)
 
-        self.projectors = nn.ModuleList(
-            [
-                nn.Linear(self.hidden_size, self.layer_kv_dim, bias=False)
-                for _ in range(self.num_layers)
-            ]
-        )
-        self.norms = nn.ModuleList(
-            [nn.LayerNorm(self.layer_kv_dim) for _ in range(self.num_layers)]
-        )
-
+        # Initialize weights
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, std=0.02)
 
-    def forward(
-        self,
-        all_layer_hidden_states: list[torch.Tensor],
-        rotary_module: Any | None = None,
-        position_offset: int = 0,
-    ) -> DynamicCache:
-        target_dtype = all_layer_hidden_states[0].dtype
-        batch_size, seq_len, _ = all_layer_hidden_states[0].shape
-        cache = DynamicCache()
+        print(
+            f"[Compressor] {hidden_size} -> {num_memory_tokens} memory tokens "
+            f"({'MLP' if use_mlp else 'Linear'})"
+        )
 
-        cos, sin = None, None
-        if rotary_module is not None:
-            dummy_device = all_layer_hidden_states[0].device
-            position_ids = torch.arange(
-                position_offset,
-                position_offset + seq_len,
-                device=dummy_device,
-                dtype=torch.long,
-            ).unsqueeze(0)
-            dummy_q = torch.zeros(
-                1, 1, seq_len, self.head_dim, device=dummy_device, dtype=target_dtype
-            )
+    def forward(self, encoder_hidden_states: torch.Tensor) -> torch.Tensor:
+        """Compress encoder outputs to memory token embeddings.
 
-            sig = inspect.signature(rotary_module.forward)
-            if "seq_len" in sig.parameters:
-                cos, sin = rotary_module(dummy_q, seq_len=position_offset + seq_len)
-            else:
-                cos, sin = rotary_module(dummy_q, position_ids)
+        Args:
+            encoder_hidden_states: [batch, seq_len, hidden_size] from encoder
 
-            start, end = position_offset, position_offset + seq_len
-            if cos.ndim == 4:
-                cos, sin = cos[:, :, start:end, :], sin[:, :, start:end, :]
-            elif cos.ndim == 3:
-                cos, sin = cos[:, start:end, :], sin[:, start:end, :]
-            elif cos.ndim == 2:
-                cos, sin = cos[start:end, :], sin[start:end, :]
+        Returns:
+            memory_embeddings: [batch, num_memory_tokens, hidden_size]
+        """
+        # Mean-pool across sequence length
+        # Shape: [batch, hidden_size]
+        pooled = encoder_hidden_states.mean(dim=1)
 
-            while cos.ndim < 4:
-                cos = cos.unsqueeze(0)
-                sin = sin.unsqueeze(0)
+        # Project to memory token space
+        compressed = self.compress_mlp(pooled) if self.use_mlp else self.compress_linear(pooled)
 
-            cos = cos.to(target_dtype)
-            sin = sin.to(target_dtype)
+        # Reshape to memory tokens
+        # Shape: [batch, num_memory_tokens, hidden_size]
+        batch_size = encoder_hidden_states.size(0)
+        memory_embeddings = compressed.view(batch_size, self.num_memory_tokens, self.hidden_size)
 
-        for i in range(self.num_layers):
-            layer_state = all_layer_hidden_states[i]
-            reconstructed_kv = self.projectors[i](layer_state)
-            reconstructed_kv = self.norms[i](reconstructed_kv)
+        # Normalize
+        memory_embeddings = self.compress_norm(memory_embeddings)
 
-            reconstructed_kv = reconstructed_kv.view(
-                batch_size,
-                seq_len,
-                2,
-                self.num_kv_heads,
-                self.head_dim,
-            )
+        return memory_embeddings
 
-            k = reconstructed_kv[:, :, 0].permute(0, 2, 1, 3)
-            v = reconstructed_kv[:, :, 1].permute(0, 2, 1, 3)
+    def compute_mse_loss(
+        self, encoder_hidden_states: torch.Tensor, memory_embeddings: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute MSE loss between compressed and original representations.
 
-            if cos is not None:
-                assert sin is not None  # cos and sin should come together
-                _, k = apply_rotary_pos_emb(None, k, cos, sin)
+        Encourages compression to preserve information from encoder outputs.
 
-            k = k.to(target_dtype)
-            v = v.to(target_dtype)
-            cache.update(k, v, layer_idx=i)
+        Args:
+            encoder_hidden_states: [batch, seq_len, hidden_size]
+            memory_embeddings: [batch, num_memory_tokens, hidden_size]
 
-        return cache
+        Returns:
+            mse_loss: scalar tensor
+        """
+        # Mean-pool both to same shape for comparison
+        original_mean = encoder_hidden_states.mean(dim=1)  # [batch, hidden_size]
+        compressed_mean = memory_embeddings.mean(dim=1)  # [batch, hidden_size]
+
+        return F.mse_loss(compressed_mean, original_mean)

@@ -13,7 +13,14 @@ if TYPE_CHECKING:
     from lamb.model import LaMBModel
 
 
-def train(model: "LaMBModel", dataset: Any, tokenizer: "PreTrainedTokenizer", config: "LaMBConfig", *, debug_examples: Optional[List[dict]] = None) -> None:
+def train(  # noqa: PLR0912,PLR0915
+    model: "LaMBModel",
+    dataset: Any,
+    tokenizer: "PreTrainedTokenizer",
+    config: "LaMBConfig",
+    *,
+    debug_examples: Optional[List[dict]] = None,
+) -> None:
     print(f"\n[Train] Starting Epoch on {len(dataset)} samples...")
     optimizer = torch.optim.AdamW(model.get_trainable_params(), lr=config.learning_rate)
     model.train()
@@ -21,7 +28,9 @@ def train(model: "LaMBModel", dataset: Any, tokenizer: "PreTrainedTokenizer", co
     def collate_fn(batch: List[dict]) -> List[str]:
         return [b["content"] for b in batch]
 
-    dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False, collate_fn=collate_fn)
+    dataloader = DataLoader(
+        dataset, batch_size=config.batch_size, shuffle=False, collate_fn=collate_fn
+    )
 
     step = 0
     optimizer.zero_grad()
@@ -89,13 +98,18 @@ def train(model: "LaMBModel", dataset: Any, tokenizer: "PreTrainedTokenizer", co
         if max_steps and step >= max_steps:
             break
 
-        if debug_examples and config.debug_every_steps and step % int(config.debug_every_steps) == 0:
+        if (
+            debug_examples
+            and config.debug_every_steps
+            and step % int(config.debug_every_steps) == 0
+        ):
             was_training = model.training
             try:
-                if debug_txt is not None:
-                    if debug_reproduce_training(model, txt=debug_txt, verbose=config.verbose):
-                        print(f"[Train] Overfit success at step={step}; stopping.")
-                        return
+                if debug_txt is not None and debug_reproduce_training(
+                    model, txt=debug_txt, verbose=config.verbose
+                ):
+                    print(f"[Train] Overfit success at step={step}; stopping.")
+                    return
             finally:
                 if was_training:
                     model.train()
@@ -106,8 +120,7 @@ def train(model: "LaMBModel", dataset: Any, tokenizer: "PreTrainedTokenizer", co
         running_loss = momentum * running_loss + (1 - momentum) * avg_loss
         running_acc = momentum * running_acc + (1 - momentum) * avg_acc
 
-        pbar.set_postfix(loss=f"{running_loss:.4f}", agree_acc=f"{running_acc*100:.2f}%")
+        pbar.set_postfix(loss=f"{running_loss:.4f}", agree_acc=f"{running_acc * 100:.2f}%")
 
-        if step % 5 == 0:
-            if config.device == "cuda" and torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        if step % 5 == 0 and config.device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()

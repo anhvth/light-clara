@@ -40,23 +40,25 @@ ctx_str += splitter  # Include splitter in context
 
 ```bash
 uv sync                    # Install dependencies
-uv sync --group dev       # Add development tools
-uv run lamb --help        # Run CLI commands
+uv sync --extra dev        # Add development tools
+uv run lamb --help         # Run CLI commands
 ```
 
-**Code Quality**: Strict type checking and formatting enforced.
+**Code Quality**: All code quality tasks handled by ruff (linting, formatting, import sorting).
 
 ```bash
-uv run ruff check lamb/   # Lint (includes import sorting)
-uv run mypy lamb/         # Type check
-uv run black lamb/        # Format
-uv run isort lamb/        # Sort imports
+uv run ruff check lamb/         # Lint with auto-fixable rules
+uv run ruff check --fix lamb/   # Lint and auto-fix issues
+uv run ruff format lamb/        # Format code
+./scripts/improve_code.sh       # Auto-format, fix, and report errors
 ```
 
-**Validation**: Use the error reporting script for comprehensive checks.
+**Validation**: Use the utility scripts for comprehensive checks and fixes.
 
 ```bash
-./script/report_error.sh   # Syntax + linting validation
+./scripts/report_error.sh   # Check syntax + linting, generate report
+./scripts/format_code.sh    # Auto-format code with ruff
+./scripts/improve_code.sh   # Run all fixes and report remaining issues
 ```
 
 ## Project Conventions

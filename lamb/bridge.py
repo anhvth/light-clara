@@ -1,7 +1,8 @@
+import inspect
 from typing import Any, List, Optional
 
 import torch
-import torch.nn as nn
+from torch import nn
 from transformers.cache_utils import DynamicCache
 
 from lamb.utils import apply_rotary_pos_emb
@@ -44,7 +45,12 @@ class VerticalLatentMemoryBridge(nn.Module):
             if isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, std=0.02)
 
-    def forward(self, all_layer_hidden_states: List[torch.Tensor], rotary_module: Optional[Any] = None, position_offset: int = 0) -> DynamicCache:
+    def forward(
+        self,
+        all_layer_hidden_states: List[torch.Tensor],
+        rotary_module: Optional[Any] = None,
+        position_offset: int = 0,
+    ) -> DynamicCache:
         target_dtype = all_layer_hidden_states[0].dtype
         batch_size, seq_len, _ = all_layer_hidden_states[0].shape
         cache = DynamicCache()
@@ -61,8 +67,6 @@ class VerticalLatentMemoryBridge(nn.Module):
             dummy_q = torch.zeros(
                 1, 1, seq_len, self.head_dim, device=dummy_device, dtype=target_dtype
             )
-
-            import inspect
 
             sig = inspect.signature(rotary_module.forward)
             if "seq_len" in sig.parameters:

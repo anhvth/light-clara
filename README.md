@@ -41,27 +41,43 @@ lamb --model-name Qwen/Qwen3-4B-Instruct-2507 --dataset-size 20000 --max-steps 1
 Install development dependencies:
 
 ```bash
-uv sync --group dev
+uv sync --extra dev
 ```
 
-Run tests:
+### Code Quality Automation
+
+This project uses **ruff** exclusively for all code quality tasks (formatting, linting, import sorting). Use the provided scripts for automated code improvements:
+
+```bash
+# Main script: Auto-format, auto-fix, and generate report
+./scripts/improve_code.sh
+
+# Quick format only
+./scripts/format_code.sh
+
+# Generate error report without changes
+./scripts/report_error.sh
+```
+
+See [scripts/README.md](scripts/README.md) for detailed documentation.
+
+### Manual Commands
+
+```bash
+# Format code
+uv run ruff format lamb/
+
+# Auto-fix linting issues
+uv run ruff check --fix lamb/
+
+# Check without fixing
+uv run ruff check lamb/
+```
+
+### Run Tests
 
 ```bash
 uv run pytest
-```
-
-Format code:
-
-```bash
-uv run black lamb/
-uv run isort lamb/
-```
-
-Lint code:
-
-```bash
-uv run ruff check lamb/
-uv run mypy lamb/
 ```
 
 ## Project Structure

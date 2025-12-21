@@ -2,9 +2,9 @@ import random
 from typing import Any, List, Tuple, Union, cast
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from peft import LoraConfig, TaskType
+from torch import nn
+from torch.nn import functional
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from lamb.bridge import VerticalLatentMemoryBridge
@@ -166,9 +166,9 @@ class LaMBModel(nn.Module):
         s_logits = s_out.logits[:, :-1, :]
 
         temp = float(self.config.kl_temperature)
-        s_log_probs = F.log_softmax((s_logits.float() / temp), dim=-1)
-        t_probs = F.softmax((t_logits[:, 1:, :].float() / temp), dim=-1)
-        kl_per_vocab = F.kl_div(s_log_probs, t_probs, reduction="none", log_target=False)
+        s_log_probs = functional.log_softmax((s_logits.float() / temp), dim=-1)
+        t_probs = functional.softmax((t_logits[:, 1:, :].float() / temp), dim=-1)
+        kl_per_vocab = functional.kl_div(s_log_probs, t_probs, reduction="none", log_target=False)
         kl_per_token = kl_per_vocab.sum(dim=-1)
         kl_loss = kl_per_token.mean() * (temp**2)
 
@@ -181,7 +181,7 @@ class LaMBModel(nn.Module):
                 if self.tokenizer.pad_token_id is not None
                 else -100
             )
-            ce_loss = F.cross_entropy(
+            ce_loss = functional.cross_entropy(
                 s_logits.reshape(-1, s_logits.size(-1)).float(),
                 gold_next.reshape(-1),
                 ignore_index=ignore_idx,

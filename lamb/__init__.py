@@ -7,10 +7,10 @@ from .train import train
 
 __all__ = [
     "LaMBConfig",
-    "default_config",
     "LaMBModel",
     "VerticalLatentMemoryBridge",
-    "train",
     "debug_reproduce_training",
+    "default_config",
     "generate_student",
+    "train",
 ]

@@ -2,7 +2,12 @@ import os
 from typing import Optional, Tuple
 
 import torch
-import torch.nn.functional as F
+from torch.nn import functional
+
+try:
+    import flash_attn  # type: ignore
+except ImportError:
+    flash_attn = None
 
 
 def env_flag(name: str) -> bool:
@@ -47,16 +52,14 @@ def pick_dtype(device: str) -> torch.dtype:
 
 
 def sdpa_available() -> bool:
-    return hasattr(F, "scaled_dot_product_attention")
+    return hasattr(functional, "scaled_dot_product_attention")
 
 
 def flash_attn_available() -> bool:
     if env_flag("LAMB_DISABLE_FLASH_ATTN"):
         return False
     try:
-        import flash_attn  # type: ignore  # noqa: F401
-
-        return True
+        return flash_attn is not None
     except Exception:
         return False
 

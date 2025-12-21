@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING, Any
 
 import torch
-import torch.nn.functional as F
+from torch.nn import functional
 
 if TYPE_CHECKING:
     from lamb.model import LaMBModel
@@ -15,7 +15,7 @@ def _decode_to_str(tokenizer: Any, ids: Any) -> str:
 
 
 @torch.no_grad()
-def debug_reproduce_training(
+def debug_reproduce_training(  # noqa: PLR0912,PLR0915
     model: "LaMBModel",
     *,
     txt: str,
@@ -64,14 +64,14 @@ def debug_reproduce_training(
     ]
     acc = (sum(matches) / len(matches)) if matches else 0.0
 
-    lm_loss = F.cross_entropy(
+    lm_loss = functional.cross_entropy(
         logits.view(-1, logits.size(-1)), torch.tensor(gold_next, device=logits.device)
     ).item()
 
     if verbose and tgt_ids:
         t0 = tgt_ids[0]
         t0_dec = _decode_to_str(tokenizer, [t0]).replace(chr(10), "↩")
-        print(f"[Dbg] t0 (FIRST target token): {t0} -> {repr(t0_dec)}")
+        print(f"[Dbg] t0 (FIRST target token): {t0} -> {t0_dec!r}")
         print(
             "[Dbg] The table below compares predicted NEXT token vs gold NEXT token, so it starts at t1 (not t0)."
         )
@@ -87,7 +87,7 @@ def debug_reproduce_training(
             g_s = _decode_to_str(tokenizer, [g]).replace("\n", "↩")
             p_s = _decode_to_str(tokenizer, [p]).replace("\n", "↩")
             ok = "=" if g == p else "≠"
-            print(f"  {i:02d}: {g:6d} {ok} {p:6d} | gold:{repr(g_s)} pred:{repr(p_s)}")
+            print(f"  {i:02d}: {g:6d} {ok} {p:6d} | gold:{g_s!r} pred:{p_s!r}")
 
     if len(tgt_ids) >= 1:
         seed = tgt_ids[0]
@@ -124,7 +124,7 @@ def debug_reproduce_training(
             print(f"[Dbg] Greedy seeded full-match (prefix length {len(tgt_ids)}): {full_match}")
 
     if verbose and tgt_ids:
-        recon = [tgt_ids[0]] + pred_next[: len(gold_next)]
+        recon = [tgt_ids[0], *pred_next[: len(gold_next)]]
         recon_txt = _decode_to_str(tokenizer, recon)
         print(f"[Dbg] Teacher-forced recon decode (head): {recon_txt[:300].replace(chr(10), '↩')}")
 

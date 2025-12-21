@@ -63,7 +63,9 @@ def build_config(args: argparse.Namespace) -> LaMBConfig:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train LaMB translator")
     parser.add_argument("--model-name", type=str, default=None, help="HF model name")
-    parser.add_argument("--dataset-size", type=int, default=20000, help="Number of training samples to use")
+    parser.add_argument(
+        "--dataset-size", type=int, default=20000, help="Number of training samples to use"
+    )
     parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
     parser.add_argument("--learning-rate", type=float, default=None, help="Learning rate")
     parser.add_argument("--max-seq-len", type=int, default=None, help="Truncation length")

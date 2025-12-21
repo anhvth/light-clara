@@ -8,7 +8,7 @@ from lamb.utils import env_flag, pick_attn_implementation, pick_device, pick_dty
 
 @dataclass
 class LaMBConfig:
-    model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
+    model_name: str = "Qwen/Qwen3-0.6B"
     num_memory_tokens: int = 32
 
     compressor_lora_rank: int = 16

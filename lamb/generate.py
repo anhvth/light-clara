@@ -7,7 +7,7 @@ if TYPE_CHECKING:
 
 
 @torch.no_grad()
-def generate_student(
+def generate_student(  # noqa: PLR0912,PLR0915
     model: "LaMBModel",
     *,
     en_text: str,
@@ -115,7 +115,7 @@ def generate_student(
 
     print(f"[Gen] Generated {len(generated_ids)} tokens: {generated_ids[:20]}...")
 
-    decoded = tokenizer.decode([seed_id] + generated_ids, skip_special_tokens=True)
+    decoded = tokenizer.decode([seed_id, *generated_ids], skip_special_tokens=True)
     if isinstance(decoded, list):
         decoded = " ".join(decoded)
     generated_text = str(decoded).strip()

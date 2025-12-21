@@ -20,8 +20,10 @@ COMMAND="${1:-improve}"
 case "${COMMAND}" in
     "format")
         echo "🎨 Formatting code with ruff..."
-        uv run ruff format lamb/
-        echo "✅ Code formatting complete!"
+        uv run ruff format src/lamb/
+        echo "🔧 Sorting imports with isort..."
+        uv run isort src/lamb/
+        echo "✅ Code formatting and import sorting complete!"
         ;;
     "report")
         TS="$(date +%Y%m%d_%H%M%S)"
@@ -197,16 +199,25 @@ PY
 
         # Step 1: Format code
         echo "📝 Step 1: Auto-formatting code..."
-        if uv run ruff format lamb/; then
+        if uv run ruff format src/lamb/; then
             echo "✅ Formatting complete"
         else
             echo "⚠️  Formatting had issues (continuing...)"
         fi
         echo ""
 
+        # Step 1.5: Sort imports
+        echo "🔧 Step 1.5: Sorting imports with isort..."
+        if uv run isort src/lamb/; then
+            echo "✅ Import sorting complete"
+        else
+            echo "⚠️  Import sorting had issues (continuing...)"
+        fi
+        echo ""
+
         # Step 2: Auto-fix linting issues
         echo "🔍 Step 2: Auto-fixing linting issues..."
-        if uv run ruff check --fix lamb/; then
+        if uv run ruff check --fix src/lamb/; then
             echo "✅ Auto-fix complete"
         else
             echo "⚠️  Some issues could not be auto-fixed (continuing...)"

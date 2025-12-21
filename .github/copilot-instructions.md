@@ -65,7 +65,7 @@ uv run ruff format lamb/        # Format code
 
 ## Project Conventions
 
-**Type Annotations**: Python 3.8+ compatible - use `Union[X, Y]` not `X | Y`, `List[int]` not `list[int]`.
+**Type Annotations**: Python 3.10+ compatible - use `X | Y` not `Union[X, Y]`, `list[int]` not `List[int]`.
 
 **Error Handling**: Training gracefully handles non-finite losses by skipping batches, not crashing.
 

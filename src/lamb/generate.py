@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Optional
 
 import torch
 
@@ -68,7 +68,7 @@ def generate_student(  # noqa: PLR0912,PLR0915
     seed_id = int(target_ids[0])
     input_ids = torch.tensor([[seed_id]], device=model.config.device)
 
-    generated_ids: List[int] = []
+    generated_ids: list[int] = []
 
     def _sample_next(logits: torch.Tensor) -> int:
         if not do_sample or temperature <= 0:

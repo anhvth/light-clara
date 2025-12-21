@@ -1,5 +1,5 @@
 import random
-from typing import Any, List, Tuple, Union, cast
+from typing import Any, cast
 
 import torch
 from peft import LoraConfig, TaskType
@@ -116,12 +116,12 @@ class LaMBModel(nn.Module):
                 self.rotary_emb = module
                 break
 
-    def get_trainable_params(self) -> List[torch.nn.Parameter]:
+    def get_trainable_params(self) -> list[torch.nn.Parameter]:
         return [p for _, p in self.named_parameters() if p.requires_grad]
 
     def compress(
         self, context_ids: torch.Tensor, context_mask: torch.Tensor
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, ...]:
         self.base_model.set_adapter("compressor")
         ctx_embeds = self.base_model.get_input_embeddings()(context_ids)
         mem_embeds = self.memory_input_embeds.expand(context_ids.shape[0], -1, -1)
@@ -143,8 +143,8 @@ class LaMBModel(nn.Module):
         return tuple(extracted_states)
 
     def forward(
-        self, full_input_ids: torch.Tensor, split_indices: List[int], return_metrics: bool = False
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, dict]]:
+        self, full_input_ids: torch.Tensor, split_indices: list[int], return_metrics: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, dict]:
         split_idx = split_indices[0]
         context_ids = full_input_ids[:, :split_idx]
         target_ids = full_input_ids[:, split_idx:]

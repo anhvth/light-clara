@@ -1,7 +1,7 @@
 import json
 import os
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 from torch.utils.data import DataLoader
@@ -27,7 +27,7 @@ def train(  # noqa: PLR0912,PLR0915
     tokenizer: "PreTrainedTokenizer",
     config: "LaMBConfig",
     *,
-    debug_examples: Optional[List[dict]] = None,
+    debug_examples: Optional[list[dict]] = None,
 ) -> None:
     print(f"\n[Train] Starting Epoch on {len(dataset)} samples...")
     optimizer = torch.optim.AdamW(model.get_trainable_params(), lr=config.learning_rate)
@@ -63,7 +63,7 @@ def train(  # noqa: PLR0912,PLR0915
                 global_step=0,
             )
 
-    def collate_fn(batch: List[dict]) -> List[str]:
+    def collate_fn(batch: list[dict]) -> list[str]:
         return [b["content"] for b in batch]
 
     dataloader = DataLoader(
@@ -151,7 +151,7 @@ def train(  # noqa: PLR0912,PLR0915
         ):
             was_training = model.training
             try:
-                dbg_stats: Dict[str, Any] = {}
+                dbg_stats: dict[str, Any] = {}
                 ok = False
                 if debug_txt is not None:
                     ok = debug_reproduce_training(

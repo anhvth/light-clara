@@ -1,11 +1,12 @@
 """CLI for LaMB training"""
 # pyright: reportMissingTypeStubs=false
 
+import argparse
 import os
 import platform
-from typing import Any, Dict
+from dataclasses import MISSING, fields
+from typing import Any
 
-import fire
 from datasets import load_dataset
 
 from lamb.config import LaMBConfig
@@ -13,7 +14,7 @@ from lamb.model import LaMBModel
 from lamb.train import train
 
 
-def _format_translation(tokenizer: Any, translation: Dict[str, str]) -> str:
+def _format_translation(tokenizer: Any, translation: dict[str, str]) -> str:
     result = tokenizer.apply_chat_template(
         [
             {"role": "system", "content": "You are a translator from English to Vietnamese"},
@@ -28,7 +29,7 @@ def _format_translation(tokenizer: Any, translation: Dict[str, str]) -> str:
 def prepare_dataset(tokenizer: Any, dataset_size: int) -> tuple:
     ds = load_dataset("opus100", "en-vi", split="train")
 
-    def format_ds(x: Dict[str, Any]) -> Dict[str, str]:
+    def format_ds(x: dict[str, Any]) -> dict[str, str]:
         translation = x["translation"]
         return {"content": _format_translation(tokenizer, translation)}
 
@@ -64,7 +65,26 @@ def _main(config: LaMBConfig) -> None:
 
 
 def main() -> None:
-    config = fire.Fire(LaMBConfig)
+    parser = argparse.ArgumentParser(description="LaMB training CLI")
+    config_fields = fields(LaMBConfig)
+
+    for field in config_fields:
+        name = field.name
+        default = field.default if field.default is not MISSING else None
+        if field.default_factory is not MISSING:
+            default = field.default_factory()
+
+        # Add arguments for simple types
+        if field.type in (str, int, float, bool):
+            parser.add_argument(f"--{name}", type=field.type, default=default, help=f"Set {name}")
+
+    args = parser.parse_args()
+
+    config = LaMBConfig()
+    for field in config_fields:
+        if hasattr(args, field.name):
+            setattr(config, field.name, getattr(args, field.name))
+
     _main(config)
 
 

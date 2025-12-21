@@ -1,5 +1,5 @@
 import inspect
-from typing import Any, List, Optional
+from typing import Any
 
 import torch
 from torch import nn
@@ -47,8 +47,8 @@ class VerticalLatentMemoryBridge(nn.Module):
 
     def forward(
         self,
-        all_layer_hidden_states: List[torch.Tensor],
-        rotary_module: Optional[Any] = None,
+        all_layer_hidden_states: list[torch.Tensor],
+        rotary_module: Any | None = None,
         position_offset: int = 0,
     ) -> DynamicCache:
         target_dtype = all_layer_hidden_states[0].dtype

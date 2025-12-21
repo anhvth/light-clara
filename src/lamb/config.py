@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from typing import Optional
 
 import torch
 
@@ -24,7 +23,7 @@ class LaMBConfig:
         default_factory=lambda: pick_attn_implementation(pick_device())
     )
     max_seq_len: int = 2048
-    max_steps: Optional[int] = None
+    max_steps: int | None = None
 
     debug_every_steps: int = 5
     debug_num_samples: int = 1

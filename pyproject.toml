@@ -32,14 +32,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "ruff>=0.5.0", "isort>=5.0.0"]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.5.0",
+    "isort>=5.0.0",
+    "pyyaml>=6.0.0",
+]
 
 [project.scripts]
 lamb = "lamb.cli:main"
 
 [tool.hatch.build.targets.wheel]
-source = "src"
-packages = ["lamb"]
+packages = ["src/lamb"]
 
 [tool.ruff]
 line-length = 100

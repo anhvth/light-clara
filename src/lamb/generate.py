@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -11,9 +11,9 @@ def generate_student(  # noqa: PLR0912,PLR0915
     model: "LaMBModel",
     *,
     en_text: str,
-    expected_vi: Optional[str] = None,
+    expected_vi: str | None = None,
     system_prompt: str = "You are a translator from English to Vietnamese",
-    max_new_tokens: Optional[int] = None,
+    max_new_tokens: int | None = None,
     temperature: float = 0.8,
     top_p: float = 0.95,
     do_sample: bool = True,

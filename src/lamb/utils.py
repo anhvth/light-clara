@@ -1,5 +1,4 @@
 import os
-from typing import Optional, Tuple
 
 import torch
 from torch.nn import functional
@@ -73,8 +72,8 @@ def pick_attn_implementation(device: str) -> str:
 
 
 def apply_rotary_pos_emb(
-    q: Optional[torch.Tensor], k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
-) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
+    q: torch.Tensor | None, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+) -> tuple[torch.Tensor | None, torch.Tensor]:
     def rotate_half(x: torch.Tensor) -> torch.Tensor:
         x1 = x[..., : x.shape[-1] // 2]
         x2 = x[..., x.shape[-1] // 2 :]

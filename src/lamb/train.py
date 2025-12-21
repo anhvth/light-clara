@@ -1,7 +1,7 @@
 import json
 import os
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch.utils.data import DataLoader
@@ -27,7 +27,7 @@ def train(  # noqa: PLR0912,PLR0915
     tokenizer: "PreTrainedTokenizer",
     config: "LaMBConfig",
     *,
-    debug_examples: Optional[list[dict]] = None,
+    debug_examples: list[dict] | None = None,
 ) -> None:
     print(f"\n[Train] Starting Epoch on {len(dataset)} samples...")
     optimizer = torch.optim.AdamW(model.get_trainable_params(), lr=config.learning_rate)
@@ -81,7 +81,7 @@ def train(  # noqa: PLR0912,PLR0915
     except TypeError:
         dl_len = None
 
-    pbar_total: Optional[int] = None
+    pbar_total: int | None = None
     if max_steps and dl_len is not None:
         pbar_total = min(int(dl_len), int(max_steps))
     elif max_steps:
@@ -92,7 +92,7 @@ def train(  # noqa: PLR0912,PLR0915
     pbar = tqdm(dataloader, desc="Train", dynamic_ncols=True, total=pbar_total)
 
     for batch_txt in pbar:
-        debug_txt: Optional[str] = None
+        debug_txt: str | None = None
         batch_loss, batch_correct, batch_total = 0.0, 0, 0
         batch_kl, batch_ce, batch_alpha = 0.0, 0.0, 0.0
         batch_count = 0

@@ -1,4 +1,4 @@
-import random
+# type: ignore
 from typing import Any, cast
 
 import torch
@@ -65,14 +65,16 @@ class LaMBModel(nn.Module):
             "down_proj",
         ]
 
-        compressor_cfg = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            inference_mode=False,
-            r=config.compressor_lora_rank,
-            lora_alpha=config.compressor_lora_alpha,
-            target_modules=target_modules,
-        )
-        self.base_model.add_adapter(compressor_cfg, adapter_name="compressor")
+        self.has_compressor = config.compressor_lora_rank > 0
+        if self.has_compressor:
+            compressor_cfg = LoraConfig(  # type: ignore
+                task_type=TaskType.CAUSAL_LM,
+                inference_mode=False,
+                r=config.compressor_lora_rank,
+                lora_alpha=config.compressor_lora_alpha,
+                target_modules=target_modules,
+            )
+            self.base_model.add_adapter(compressor_cfg, adapter_name="compressor")
 
         self.bridge = VerticalLatentMemoryBridge(self.base_model.config).to(
             config.device, dtype=self.base_model.dtype
@@ -113,6 +115,7 @@ class LaMBModel(nn.Module):
 
         for name, module in self.base_model.named_modules():
             if "rotary_emb" in name or "RotaryEmbedding" in module.__class__.__name__:
+                print(f"[Model] Found rotary embedding module: {name}")
                 self.rotary_emb = module
                 break
 
@@ -122,7 +125,8 @@ class LaMBModel(nn.Module):
     def compress(
         self, context_ids: torch.Tensor, context_mask: torch.Tensor
     ) -> tuple[torch.Tensor, ...]:
-        self.base_model.set_adapter("compressor")
+        if self.has_compressor:
+            self.base_model.set_adapter("compressor")
         ctx_embeds = self.base_model.get_input_embeddings()(context_ids)
         mem_embeds = self.memory_input_embeds.expand(context_ids.shape[0], -1, -1)
         inputs_embeds = torch.cat([ctx_embeds, mem_embeds], dim=1)
@@ -142,7 +146,7 @@ class LaMBModel(nn.Module):
 
         return tuple(extracted_states)
 
-    def forward(
+    def forward(  # noqa: PLR0915
         self, full_input_ids: torch.Tensor, split_indices: list[int], return_metrics: bool = False
     ) -> torch.Tensor | tuple[torch.Tensor, dict]:
         split_idx = split_indices[0]
@@ -150,27 +154,45 @@ class LaMBModel(nn.Module):
         target_ids = full_input_ids[:, split_idx:]
         context_mask = (context_ids != self.tokenizer.pad_token_id).long()
 
-        self.base_model.disable_adapters()
-        with torch.no_grad():
-            t_out = self.base_model(input_ids=full_input_ids)
-            t_logits = t_out.logits[:, split_idx - 1 : -1, :].clone()
-            del t_out
+        alpha = float(getattr(self.config, "ce_alpha", 0.0))
+        if alpha < 0.0:
+            alpha = 0.0
+        elif alpha > 1.0:
+            alpha = 1.0
+
+        # If alpha==1.0, KL weight is 0 so we can skip the teacher forward pass entirely.
+        t_logits: torch.Tensor | None = None
+        if alpha < 1.0:
+            if self.has_compressor:
+                self.base_model.disable_adapters()
+            with torch.no_grad():
+                t_out = self.base_model(input_ids=full_input_ids)
+                t_logits = t_out.logits[:, split_idx - 1 : -1, :].clone()
+                del t_out
 
         layer_latents = self.compress(context_ids, context_mask)
         past_key_values = self.bridge(layer_latents, rotary_module=self.rotary_emb)
 
-        self.base_model.disable_adapters()
+        if self.has_compressor:
+            self.base_model.disable_adapters()
         s_out = self.base_model(
             input_ids=target_ids, past_key_values=past_key_values, use_cache=False
         )
         s_logits = s_out.logits[:, :-1, :]
 
-        temp = float(self.config.kl_temperature)
-        s_log_probs = functional.log_softmax((s_logits.float() / temp), dim=-1)
-        t_probs = functional.softmax((t_logits[:, 1:, :].float() / temp), dim=-1)
-        kl_per_vocab = functional.kl_div(s_log_probs, t_probs, reduction="none", log_target=False)
-        kl_per_token = kl_per_vocab.sum(dim=-1)
-        kl_loss = kl_per_token.mean() * (temp**2)
+        if alpha < 1.0:
+            if t_logits is None:
+                raise RuntimeError("Expected teacher logits when ce_alpha < 1.0")
+            temp = float(self.config.kl_temperature)
+            s_log_probs = functional.log_softmax((s_logits.float() / temp), dim=-1)
+            t_probs = functional.softmax((t_logits[:, 1:, :].float() / temp), dim=-1)
+            kl_per_vocab = functional.kl_div(
+                s_log_probs, t_probs, reduction="none", log_target=False
+            )
+            kl_per_token = kl_per_vocab.sum(dim=-1)
+            kl_loss = kl_per_token.mean() * (temp**2)
+        else:
+            kl_loss = s_logits.detach().mean() * 0.0
 
         gold_next = target_ids[:, 1:]
         if gold_next.numel() == 0:
@@ -186,41 +208,63 @@ class LaMBModel(nn.Module):
                 gold_next.reshape(-1),
                 ignore_index=ignore_idx,
             )
-
-        alpha = float(getattr(self.config, "ce_alpha", 0.0))
-        if alpha < 0.0:
-            alpha = 0.0
-        elif alpha > 1.0:
-            alpha = 1.0
         loss = (1.0 - alpha) * kl_loss + alpha * ce_loss
 
         if not return_metrics:
             return loss
 
         with torch.no_grad():
-            teacher_pred = t_logits[:, 1:, :].argmax(dim=-1)
             student_pred = s_logits.argmax(dim=-1)
+            ignore_idx = (
+                int(self.tokenizer.pad_token_id)
+                if self.tokenizer.pad_token_id is not None
+                else -100
+            )
 
-            if random.choice(range(20)) == 0:
-                decode_tokens = self.tokenizer.decode(student_pred[0])
-                print(f"[Metrics] Student decoded: {decode_tokens=}")
-                print(f"[Metrics] Teacher pred: {teacher_pred[0].tolist()}")
-                print(f"[Metrics] Student pred: {student_pred[0].tolist()}")
-                print(f"[Metrics] Target actual: {target_ids[0, 1:].tolist()}")
+            if gold_next.numel() == 0:
+                token_correct = 0
+                token_total = 0
+            else:
+                valid = gold_next != ignore_idx
+                token_correct = int(((student_pred == gold_next) & valid).sum().item())
+                token_total = int(valid.sum().item())
+            token_acc = (float(token_correct) / float(token_total)) if token_total else 0.0
 
-            agree = teacher_pred == student_pred
-            correct = int(agree.sum().item())
-            total = int(agree.numel())
-            acc = (float(correct) / float(total)) if total else 0.0
+            teacher_student_correct: int | None = None
+            teacher_student_total: int | None = None
+            teacher_student_acc: float | None = None
+            if alpha < 1.0 and t_logits is not None:
+                teacher_pred = t_logits[:, 1:, :].argmax(dim=-1)
+                valid = (
+                    gold_next != ignore_idx
+                    if gold_next.numel()
+                    else torch.ones_like(student_pred, dtype=torch.bool)
+                )
+                teacher_student_correct = int(((teacher_pred == student_pred) & valid).sum().item())
+                teacher_student_total = int(valid.sum().item())
+                teacher_student_acc = (
+                    float(teacher_student_correct) / float(teacher_student_total)
+                    if teacher_student_total
+                    else 0.0
+                )
 
-        metrics = {
-            "acc": acc,
-            "agree_acc": acc,
-            "agree_correct": correct,
-            "agree_total": total,
+        metrics: dict[str, float | int] = {
+            "token_acc": float(token_acc),
+            "token_correct": int(token_correct),
+            "token_total": int(token_total),
             "loss": float(loss.detach().cpu()),
-            "kl_loss": float(kl_loss.detach().cpu()),
             "ce_loss": float(ce_loss.detach().cpu()),
             "ce_alpha": float(alpha),
         }
+
+        if alpha < 1.0:
+            metrics["kl_loss"] = float(kl_loss.detach().cpu())
+            if (
+                teacher_student_acc is not None
+                and teacher_student_correct is not None
+                and teacher_student_total is not None
+            ):
+                metrics["teacher_student_acc"] = float(teacher_student_acc)
+                metrics["teacher_student_correct"] = int(teacher_student_correct)
+                metrics["teacher_student_total"] = int(teacher_student_total)
         return loss, metrics

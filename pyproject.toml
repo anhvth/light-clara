@@ -29,6 +29,7 @@ dependencies = [
     "accelerate>=0.20.0",
     "tensorboard>=2.0.0",
     "fire>=0.5.0",
+    "ipdb>=0.13.13",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +37,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.5.0",
+    "mypy>=1.0.0",
     "isort>=5.0.0",
     "pyyaml>=6.0.0",
 ]
@@ -70,6 +72,9 @@ ignore = [
     "C901",    # too complex
     "PLR0913", # too many arguments
     "PLR2004", # magic value comparison
+    "PLR0912", # magic value comparison
+    
+    # "RPL0912",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -80,3 +85,19 @@ quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+ignore_missing_imports = true

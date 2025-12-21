@@ -10,9 +10,9 @@ from tqdm import tqdm
 from lamb.debug import debug_reproduce_training
 
 try:
-    from torch.utils.tensorboard import SummaryWriter  # type: ignore
+    from torch.utils.tensorboard import SummaryWriter
 except ImportError:
-    SummaryWriter = None
+    SummaryWriter = None  # type: ignore
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizer
@@ -41,7 +41,7 @@ def train(  # noqa: PLR0912,PLR0915
 
     if tb_enabled:
         if SummaryWriter is None:
-            print(
+            print(  # type: ignore[unreachable]
                 "[TB] TensorBoard logging requested but unavailable. "
                 "Install with: uv add tensorboard. "
             )
@@ -72,7 +72,11 @@ def train(  # noqa: PLR0912,PLR0915
 
     step = 0
     optimizer.zero_grad()
-    running_loss, running_acc = 0.0, 0.0
+
+    # Histories for last 100 steps
+    loss_history: list[float] = []
+    token_acc_history: list[float] = []
+    teacher_student_acc_history: list[float] = []
 
     max_steps = int(getattr(config, "max_steps", 0) or 0)
 
@@ -93,7 +97,10 @@ def train(  # noqa: PLR0912,PLR0915
 
     for batch_txt in pbar:
         debug_txt: str | None = None
-        batch_loss, batch_correct, batch_total = 0.0, 0, 0
+        batch_loss = 0.0
+        batch_token_correct, batch_token_total = 0, 0
+        batch_teacher_student_correct, batch_teacher_student_total = 0, 0
+        saw_teacher_student = False
         batch_kl, batch_ce, batch_alpha = 0.0, 0.0, 0.0
         batch_count = 0
         for txt in batch_txt:
@@ -128,11 +135,17 @@ def train(  # noqa: PLR0912,PLR0915
 
             loss.backward()
             batch_loss += loss.item()
-            batch_correct += int(metrics.get("agree_correct", 0))
-            batch_total += int(metrics.get("agree_total", 0))
+            batch_token_correct += int(metrics.get("token_correct", 0))
+            batch_token_total += int(metrics.get("token_total", 0))
+
+            if "teacher_student_total" in metrics:
+                saw_teacher_student = True
+                batch_teacher_student_correct += int(metrics.get("teacher_student_correct", 0))
+                batch_teacher_student_total += int(metrics.get("teacher_student_total", 0))
 
             scale = 1.0 / float(config.batch_size)
-            batch_kl += float(metrics.get("kl_loss", 0.0)) * scale
+            if "kl_loss" in metrics:
+                batch_kl += float(metrics.get("kl_loss", 0.0)) * scale
             batch_ce += float(metrics.get("ce_loss", 0.0)) * scale
             batch_alpha += float(metrics.get("ce_alpha", 0.0))
             batch_count += 1
@@ -173,23 +186,61 @@ def train(  # noqa: PLR0912,PLR0915
                             "dbg/greedy_matches", float(bool(dbg_stats["greedy_matches"])), step
                         )
 
-                if ok:
-                    print(f"[Train] Overfit success at step={step}; stopping.")
-                    return
+                # if ok and False:
+                #     print(f"[Train] Overfit success at step={step}; stopping.")
+                #     return
             finally:
                 if was_training:
                     model.train()
 
         avg_loss = float(batch_loss)
-        avg_acc = (float(batch_correct) / float(batch_total)) if batch_total else 0.0
+        avg_token_acc = (
+            (float(batch_token_correct) / float(batch_token_total)) if batch_token_total else 0.0
+        )
+        avg_teacher_student_acc = (
+            (float(batch_teacher_student_correct) / float(batch_teacher_student_total))
+            if batch_teacher_student_total
+            else 0.0
+        )
+
+        # Update histories
+        loss_history.append(avg_loss)
+        token_acc_history.append(avg_token_acc)
+        if saw_teacher_student:
+            teacher_student_acc_history.append(avg_teacher_student_acc)
+
+        # Keep only last 100
+        if len(loss_history) > 100:
+            loss_history.pop(0)
+        if len(token_acc_history) > 100:
+            token_acc_history.pop(0)
+        if len(teacher_student_acc_history) > 100:
+            teacher_student_acc_history.pop(0)
+
+        # Compute running averages
+        running_avg_loss = sum(loss_history) / len(loss_history) if loss_history else 0.0
+        running_avg_token_acc = (
+            sum(token_acc_history) / len(token_acc_history) if token_acc_history else 0.0
+        )
+        running_avg_teacher_student_acc = (
+            sum(teacher_student_acc_history) / len(teacher_student_acc_history)
+            if teacher_student_acc_history
+            else 0.0
+        )
         avg_kl = (float(batch_kl) / float(batch_count)) if batch_count else 0.0
         avg_ce = (float(batch_ce) / float(batch_count)) if batch_count else 0.0
         avg_alpha = (float(batch_alpha) / float(batch_count)) if batch_count else 0.0
-        momentum = 0.9
-        running_loss = momentum * running_loss + (1 - momentum) * avg_loss
-        running_acc = momentum * running_acc + (1 - momentum) * avg_acc
 
-        pbar.set_postfix(loss=f"{running_loss:.4f}", agree_acc=f"{running_acc * 100:.2f}%")
+        postfix: dict[str, str] = {
+            "loss": f"{avg_loss:.4f}",
+            "loss_avg": f"{running_avg_loss:.4f}",
+            "token_acc": f"{avg_token_acc * 100:.2f}%",
+            "token_acc_avg": f"{running_avg_token_acc * 100:.2f}%",
+        }
+        if saw_teacher_student:
+            postfix["teacher_student_acc"] = f"{avg_teacher_student_acc * 100:.2f}%"
+            postfix["teacher_student_acc_avg"] = f"{running_avg_teacher_student_acc * 100:.2f}%"
+        pbar.set_postfix(ordered_dict=postfix)
 
         if writer is not None and tb_every_steps and (step % tb_every_steps == 0):
             try:
@@ -198,10 +249,16 @@ def train(  # noqa: PLR0912,PLR0915
                 lr = 0.0
 
             writer.add_scalar("train/loss_step", avg_loss, step)
-            writer.add_scalar("train/loss_smoothed", running_loss, step)
-            writer.add_scalar("train/agree_acc_step", avg_acc, step)
-            writer.add_scalar("train/agree_acc_smoothed", running_acc, step)
-            writer.add_scalar("train/kl_loss_step", avg_kl, step)
+            writer.add_scalar("train/loss_smoothed", running_avg_loss, step)
+            writer.add_scalar("train/token_acc_step", avg_token_acc, step)
+            writer.add_scalar("train/token_acc_smoothed", running_avg_token_acc, step)
+            if saw_teacher_student:
+                writer.add_scalar("train/teacher_student_acc_step", avg_teacher_student_acc, step)
+                writer.add_scalar(
+                    "train/teacher_student_acc_smoothed", running_avg_teacher_student_acc, step
+                )
+            if saw_teacher_student:
+                writer.add_scalar("train/kl_loss_step", avg_kl, step)
             writer.add_scalar("train/ce_loss_step", avg_ce, step)
             writer.add_scalar("train/ce_alpha", avg_alpha, step)
             writer.add_scalar("train/lr", lr, step)

@@ -85,20 +85,20 @@ def normalize_clara_record(record: dict[str, Any]) -> ClaraExample:
 def iter_clara_examples(
     *,
     dataset_name: str,
-    split: str,
-    streaming: bool,
-    limit: int,
+    dataset_split: str,
+    dataset_streaming: bool,
+    dataset_limit: int,
 ) -> Iterable[ClaraExample]:
     """Yield normalized examples from the Hugging Face dataset.
 
     Uses streaming mode to avoid downloading full shards.
     """
 
-    if limit <= 0:
+    if dataset_limit <= 0:
         return
 
     def _yield_from_hf_datasets() -> Iterable[ClaraExample]:
-        ds = load_dataset(dataset_name, split=split, streaming=streaming)
+        ds = load_dataset(dataset_name, split=dataset_split, streaming=dataset_streaming)
 
         count = 0
         for record in ds:
@@ -109,7 +109,7 @@ def iter_clara_examples(
                 continue
             yield ex
             count += 1
-            if count >= limit:
+            if count >= dataset_limit:
                 break
 
     try:
@@ -119,26 +119,28 @@ def iter_clara_examples(
         # `apple/CLaRa_multi_stage` currently trips a Parquet casting error in some
         # versions of `datasets` when streaming (int64 -> null). Fall back to reading
         # just one parquet shard directly, which still avoids a full download.
-        yield from _yield_from_single_parquet(dataset_name=dataset_name, split=split, limit=limit)
+        yield from _yield_from_single_parquet(
+            dataset_name=dataset_name, dataset_split=dataset_split, dataset_limit=dataset_limit
+        )
 
 
 def export_debug_jsonl(
     *,
-    out_path: str,
+    dataset_export_jsonl: str,
     dataset_name: str,
-    split: str,
-    streaming: bool,
-    limit: int,
+    dataset_split: str,
+    dataset_streaming: bool,
+    dataset_limit: int,
 ) -> int:
     """Export first N examples to JSONL for fast local iteration."""
 
     written = 0
-    with open(out_path, "w", encoding="utf-8") as f:
+    with open(dataset_export_jsonl, "w", encoding="utf-8") as f:
         for ex in iter_clara_examples(
             dataset_name=dataset_name,
-            split=split,
-            streaming=streaming,
-            limit=limit,
+            dataset_split=dataset_split,
+            dataset_streaming=dataset_streaming,
+            dataset_limit=dataset_limit,
         ):
             f.write(json.dumps(ex.to_json(), ensure_ascii=False) + "\n")
             written += 1
@@ -146,8 +148,8 @@ def export_debug_jsonl(
     return written
 
 
-def _pick_parquet_file(files: list[str], split: str) -> str:
-    split_l = split.lower()
+def _pick_parquet_file(files: list[str], dataset_split: str) -> str:
+    split_l = dataset_split.lower()
     parquet_files = [f for f in files if f.endswith(".parquet")]
     # Prefer split-specific paths.
     preferred = [
@@ -165,15 +167,15 @@ def _pick_parquet_file(files: list[str], split: str) -> str:
 
 
 def _yield_from_single_parquet(
-    *, dataset_name: str, split: str, limit: int
+    *, dataset_name: str, dataset_split: str, dataset_limit: int
 ) -> Iterable[ClaraExample]:
     files = list_repo_files(dataset_name, repo_type="dataset")
-    parquet_path = _pick_parquet_file(files, split)
+    parquet_path = _pick_parquet_file(files, dataset_split)
     local_path = hf_hub_download(repo_id=dataset_name, repo_type="dataset", filename=parquet_path)
 
     pf = pq.ParquetFile(local_path)
     read = 0
-    for batch in pf.iter_batches(batch_size=min(128, max(1, limit))):
+    for batch in pf.iter_batches(batch_size=min(128, max(1, dataset_limit))):
         tbl = batch.to_pydict()
         # Convert columns dict-of-lists into row dicts.
         keys = list(tbl.keys())
@@ -185,5 +187,5 @@ def _yield_from_single_parquet(
                 continue
             yield ex
             read += 1
-            if read >= limit:
+            if read >= dataset_limit:
                 return

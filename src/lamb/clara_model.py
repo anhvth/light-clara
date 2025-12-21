@@ -3,6 +3,10 @@
 Implements Apple's CLaRa architecture with memory token compression.
 """
 
+import json
+import os
+from typing import Any, cast
+
 import torch
 from peft import LoraConfig, TaskType
 from torch import nn
@@ -10,6 +14,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from lamb.bridge import DocumentCompressor
 from lamb.config import ClaraConfig
+from lamb.debug import print_decode
 from lamb.utils import pick_attn_implementation, pick_dtype
 
 
@@ -58,7 +63,7 @@ class ClaraModel(nn.Module):
                 **model_kwargs,
             )
 
-        self.base_model.to(device=device)
+        cast(torch.nn.Module, self.base_model).to(device=device)
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, trust_remote_code=True)
@@ -102,7 +107,7 @@ class ClaraModel(nn.Module):
 
         # Initialize new token embeddings randomly
         vocab_size_original = len(self.tokenizer) - num_added
-        embed_layer = self.base_model.get_input_embeddings()
+        embed_layer = cast(nn.Embedding, self.base_model.get_input_embeddings())
 
         with torch.no_grad():
             # Initialize memory token embeddings with small random values
@@ -165,7 +170,7 @@ class ClaraModel(nn.Module):
 
     def compress_documents(
         self, doc_input_ids: torch.Tensor, doc_attention_mask: torch.Tensor
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compress documents into memory token embeddings.
 
         Args:
@@ -201,7 +206,7 @@ class ClaraModel(nn.Module):
         attention_mask: torch.Tensor,
         memory_embeddings: torch.Tensor,
         labels: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor]:
+    ) -> dict[str, Any]:
         """Forward pass with memory token replacement.
 
         Args:
@@ -251,20 +256,22 @@ class ClaraModel(nn.Module):
         embed_layer = self.base_model.get_input_embeddings()
 
         # Get base embeddings for all tokens
-        inputs_embeds = embed_layer(input_ids)  # [batch, seq_len, hidden_size]
 
+        inputs_embeds = embed_layer(input_ids)  # [batch, seq_len, hidden_size]
         # Find positions of memory tokens and replace
         mem_token_ids_set = set(self.mem_token_ids.tolist())
-
+        is_valid = False
         for b in range(batch_size):
             mem_idx = 0
             for s in range(seq_len):
                 token_id = input_ids[b, s].item()
-                if token_id in mem_token_ids_set:
-                    if mem_idx < memory_embeddings.size(1):
-                        inputs_embeds[b, s] = memory_embeddings[b, mem_idx]
-                        mem_idx += 1
-
+                if token_id in mem_token_ids_set and mem_idx < memory_embeddings.size(1):
+                    print(f"[CLaRa] Replacing mem token id {token_id} at batch {b}, seq {s}")
+                    is_valid = True
+                    inputs_embeds[b, s] = memory_embeddings[b, mem_idx]
+                    mem_idx += 1
+        print_decode(self.tokenizer, input_ids)
+        assert is_valid, "No memory tokens found in input_ids for replacement."
         return inputs_embeds
 
     def get_trainable_params(self) -> list[nn.Parameter]:
@@ -285,7 +292,6 @@ class ClaraModel(nn.Module):
 
     def save_checkpoint(self, path: str) -> None:
         """Save model checkpoint."""
-        import os
 
         os.makedirs(path, exist_ok=True)
 
@@ -299,7 +305,6 @@ class ClaraModel(nn.Module):
         self.tokenizer.save_pretrained(path)
 
         # Save config
-        import json
 
         with open(os.path.join(path, "clara_config.json"), "w") as f:
             json.dump(self.config.__dict__, f, indent=2, default=str)
@@ -309,8 +314,6 @@ class ClaraModel(nn.Module):
     @classmethod
     def load_checkpoint(cls, path: str, config: ClaraConfig | None = None) -> "ClaraModel":
         """Load model from checkpoint."""
-        import json
-        import os
 
         # Load config if not provided
         if config is None:

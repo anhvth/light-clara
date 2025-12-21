@@ -1,6 +1,6 @@
 uv run lamb \
   --stage stage1 \
-  --dataset_limit 4 \
+  --dataset_limit 100000 \
   --dataset_split test \
   --model_name Qwen/Qwen3-0.6B \
   --compress_rate 8 \
@@ -12,7 +12,7 @@ uv run lamb \
   --checkpoint_dir checkpoints/debug_demo \
   --generation_top_k 1 \
   --doc_max_length 128 \
-  --debug_mode True \
+  --debug_mode False \
   --debug_every_steps 1 \
   --debug_num_samples 1 \
   --debug_repeat_dataset 100

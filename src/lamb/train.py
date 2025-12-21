@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from lamb.model import LaMBModel
 
 
-def train(  # noqa: PLR0915
+def train(
     model: "LaMBModel",
     dataset: Any,
     tokenizer: "PreTrainedTokenizer",

@@ -65,6 +65,7 @@ def build_qa_prompt(
     ]
 
     full_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    assert isinstance(full_text, str), f"Expected str, got {type(full_text)}"
 
     # Compute prompt length (everything before answer)
     # Find the assistant marker
@@ -162,16 +163,19 @@ def stage1_collate_fn(
     decoder_texts = []
     prompt_lengths = []
     data_types = []
+    indices = []
 
     for item in batch:
         data_type = item.get("data_type", "unknown")
         question = item.get("question", "")
         answer = item.get("answer", "")
+        idx = item.get("idx", 0)
         num_docs = min(len(item.get("docs", [])), generation_top_k)
         if num_docs == 0:
             num_docs = 1
 
         data_types.append(data_type)
+        indices.append(idx)
 
         if data_type == "paraphrase":
             # Paraphrase format
@@ -196,7 +200,7 @@ def stage1_collate_fn(
     )
 
     # Create labels (mask prompt tokens, only train on answer)
-    labels = dec_encodings["input_ids"].clone()
+    labels = dec_encodings["input_ids"].clone()  # type: ignore
     for i, prompt_len in enumerate(prompt_lengths):
         # Mask everything before the answer
         labels[i, :prompt_len] = -100
@@ -212,6 +216,7 @@ def stage1_collate_fn(
         "labels": labels,
         "data_types": data_types,
         "num_docs_per_sample": num_docs_per_sample,
+        "indices": indices,
     }
 
 

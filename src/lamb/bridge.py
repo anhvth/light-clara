@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torch.nn import functional as F
+from torch.nn import functional
 
 
 class DocumentCompressor(nn.Module):
@@ -94,4 +94,4 @@ class DocumentCompressor(nn.Module):
         original_mean = encoder_hidden_states.mean(dim=1)  # [batch, hidden_size]
         compressed_mean = memory_embeddings.mean(dim=1)  # [batch, hidden_size]
 
-        return F.mse_loss(compressed_mean, original_mean)
+        return functional.mse_loss(compressed_mean, original_mean)

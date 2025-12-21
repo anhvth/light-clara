@@ -146,7 +146,7 @@ class LaMBModel(nn.Module):
 
         return tuple(extracted_states)
 
-    def forward(  # noqa: PLR0915
+    def forward(
         self, full_input_ids: torch.Tensor, split_indices: list[int], return_metrics: bool = False
     ) -> torch.Tensor | tuple[torch.Tensor, dict]:
         split_idx = split_indices[0]

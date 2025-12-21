@@ -11,158 +11,17 @@ from tqdm import tqdm
 from lamb.clara_collate import make_stage1_collate_fn
 from lamb.clara_model import ClaraModel
 from lamb.config import ClaraConfig
+from lamb.debug import debug_reproduce_clara
 
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
     SummaryWriter = None  # type: ignore
 
-
-def _ansi_fg_rgb(r: int, g: int, b: int) -> str:
-    """Generate ANSI escape code for RGB foreground color."""
-    r = max(0, min(255, int(r)))
-    g = max(0, min(255, int(g)))
-    b = max(0, min(255, int(b)))
-    return f"\x1b[38;2;{r};{g};{b}m"
-
-
-def _ansi_reset() -> str:
-    """ANSI reset code."""
-    return "\x1b[0m"
-
-
-def _score_to_rgb(score: float) -> tuple[int, int, int]:
-    """Convert probability score to RGB color (red=0, green=1)."""
-    score = float(score)
-    score = max(0.0, min(1.0, score))
-    # Red for low scores, green for high scores
-    r = round(255 * (1.0 - score))
-    g = round(255 * score)
-    b = 0
-    return r, g, b
-
-
-def _decode_to_str(tokenizer: Any, ids: Any) -> str:
-    """Decode token IDs to string."""
-    decoded = tokenizer.decode(ids, skip_special_tokens=False)
-    if isinstance(decoded, list):
-        return " ".join(decoded)
-    return str(decoded)
-
-
-@torch.no_grad()
-def debug_reproduce_clara(
-    model: ClaraModel,
-    batch: dict[str, Any],
-    config: ClaraConfig,
-    sample_idx: int = 0,
-    max_print_tokens: int = 100,
-) -> None:
-    """Debug CLaRa training with color-coded token-by-token output.
-
-    Shows gold answer tokens colored by model's probability (red=low, green=high).
-    """
-    was_training = model.training
-    model.eval()
-    tokenizer = model.tokenizer
-
-    # Get one sample from batch
-    doc_input_ids = batch["doc_input_ids"][sample_idx : sample_idx + 1].to(config.device)
-    doc_attention_mask = batch["doc_attention_mask"][sample_idx : sample_idx + 1].to(config.device)
-    dec_input_ids = batch["dec_input_ids"][sample_idx : sample_idx + 1].to(config.device)
-    labels = batch["labels"][sample_idx : sample_idx + 1].to(config.device)
-
-    # Compress documents
-    memory_embeddings, _ = model.compress_documents(doc_input_ids, doc_attention_mask)
-    memory_embeddings_flat = memory_embeddings.view(1, -1, memory_embeddings.size(-1))
-
-    # Forward through decoder
-    outputs = model.forward_with_memory(
-        input_ids=dec_input_ids,
-        attention_mask=torch.ones_like(dec_input_ids),
-        memory_embeddings=memory_embeddings_flat,
-        labels=None,  # Don't compute loss, just get logits
-    )
-
-    logits = outputs["logits"][:, :-1, :]  # Shift for next-token prediction
-    gold_ids_list = dec_input_ids[0].tolist()
-    gold_next = gold_ids_list[1:]  # Next tokens to predict
-
-    # Get model predictions
-    pred_next = logits.argmax(dim=-1)[0].tolist()
-
-    # Compute probabilities for gold tokens
-    gold_scores: list[float] = []
-    if gold_next:
-        logits0 = logits[0].float()
-        probs0 = torch.softmax(logits0, dim=-1)
-        gold_idx = torch.tensor(gold_next, device=probs0.device, dtype=torch.long)
-        gold_scores_t = probs0.gather(-1, gold_idx.unsqueeze(-1)).squeeze(-1)
-        gold_scores = gold_scores_t.cpu().tolist()
-
-    # Compute accuracy
-    matches = [
-        int(pred_next[i] == gold_next[i]) for i in range(min(len(gold_next), len(pred_next)))
-    ]
-    acc = (sum(matches) / len(matches)) if matches else 0.0
-
-    # Compute loss on answer tokens only
-    valid_mask = labels[0] != -100
-    if valid_mask.any():
-        answer_logits = logits[0][valid_mask[1:]]  # Skip first token, match with labels
-        answer_labels = labels[0][valid_mask]
-        ce_loss = torch.nn.functional.cross_entropy(answer_logits, answer_labels).item()
-    else:
-        ce_loss = 0.0
-
-    print("\n" + "=" * 80)
-    print(f"[Debug] Sample {sample_idx}")
-    print("=" * 80)
-    print(f"[Debug] Answer token accuracy: {acc * 100:.2f}% ({sum(matches)}/{len(matches)})")
-    print(f"[Debug] Answer CE loss: {ce_loss:.6f}")
-
-    # Color-coded output: show prompt + answer tokens colored by probability
-    # Find where answer starts (first non -100 label)
-    label_mask = labels[0] != -100
-    if label_mask.any():
-        answer_start_idx = label_mask.nonzero(as_tuple=True)[0][0].item()
-
-        # Prompt (uncolored)
-        prompt_ids = gold_ids_list[:answer_start_idx]
-        prompt_text = _decode_to_str(tokenizer, prompt_ids)
-
-        # Answer tokens (colored by model probability)
-        answer_ids = gold_ids_list[answer_start_idx:]
-        # Adjust gold_scores index (it starts from position 0 in shifted logits)
-        # We need scores for tokens starting at answer_start_idx
-        answer_scores_start = answer_start_idx - 1  # Because logits are shifted by 1
-
-        colored_parts: list[str] = []
-        n = min(len(answer_ids), max_print_tokens, len(gold_scores) - answer_scores_start)
-        for i in range(n):
-            tok_id = answer_ids[i]
-            tok_txt = _decode_to_str(tokenizer, [tok_id])
-            score_idx = answer_scores_start + i
-            if 0 <= score_idx < len(gold_scores):
-                score = gold_scores[score_idx]
-                r, g, b = _score_to_rgb(score)
-                colored_parts.append(f"{_ansi_fg_rgb(r, g, b)}{tok_txt}{_ansi_reset()}")
-            else:
-                colored_parts.append(tok_txt)
-
-        suffix = ""
-        if n < len(answer_ids):
-            suffix = f"{_ansi_reset()}…(+{len(answer_ids) - n} tokens)"
-
-        print(
-            "\n[Debug] Answer colored by P(gold token) - red=low confidence, green=high confidence:\n"
-            f"{prompt_text}{''.join(colored_parts)}{suffix}\n"
-        )
-
-    print("=" * 80 + "\n")
-
-    if was_training:
-        model.train()
+try:
+    import ipdb
+except ImportError:
+    ipdb = None  # type: ignore
 
 
 def train_stage1(
@@ -275,12 +134,15 @@ def train_stage1(
         # Pad to same length
         max_mem_tokens = max(m.size(0) for m in batch_memory_embeddings)
         padded_memory_embeddings = []
-        for mem in batch_memory_embeddings:
-            if mem.size(0) < max_mem_tokens:
-                pad_size = max_mem_tokens - mem.size(0)
-                pad = torch.zeros(pad_size, mem.size(1), dtype=mem.dtype, device=mem.device)
-                mem = torch.cat([mem, pad], dim=0)
-            padded_memory_embeddings.append(mem)
+        for mem_tensor in batch_memory_embeddings:
+            padded = mem_tensor
+            if padded.size(0) < max_mem_tokens:
+                pad_size = max_mem_tokens - padded.size(0)
+                pad = torch.zeros(
+                    pad_size, padded.size(1), dtype=padded.dtype, device=padded.device
+                )
+                padded = torch.cat([padded, pad], dim=0)
+            padded_memory_embeddings.append(padded)
 
         batch_memory_embeddings_tensor = torch.stack(padded_memory_embeddings)
 
@@ -375,9 +237,6 @@ def train_stage1(
             )
 
             # Debug generation
-            import ipdb
-
-            ipdb.set_trace()
             if config.debug_mode and global_step % config.debug_every_steps == 0:
                 for debug_idx in range(min(config.debug_num_samples, batch_size)):
                     try:

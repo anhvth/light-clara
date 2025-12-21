@@ -48,20 +48,20 @@ def prepare_dataset(config: ClaraConfig) -> list[dict[str, Any]]:
 
     if export_path:
         n = export_debug_jsonl(
-            out_path=export_path,
+            dataset_export_jsonl=export_path,
             dataset_name=dataset_name,
-            split=dataset_split,
-            streaming=dataset_streaming,
-            limit=dataset_limit,
+            dataset_split=dataset_split,
+            dataset_streaming=dataset_streaming,
+            dataset_limit=dataset_limit,
         )
         print(f"[Data] Exported {n} examples to {export_path}")
 
     examples = list(
         iter_clara_examples(
             dataset_name=dataset_name,
-            split=dataset_split,
-            streaming=dataset_streaming,
-            limit=dataset_limit,
+            dataset_split=dataset_split,
+            dataset_streaming=dataset_streaming,
+            dataset_limit=dataset_limit,
         )
     )
     if not examples:
@@ -71,9 +71,10 @@ def prepare_dataset(config: ClaraConfig) -> list[dict[str, Any]]:
 
     # Convert to dict format for collate function
     dataset = []
-    for ex in examples:
+    for idx, ex in enumerate(examples):
         dataset.append(
             {
+                "idx": idx,
                 "data_type": ex.data_type,
                 "question": ex.question,
                 "docs": ex.docs,
@@ -86,7 +87,6 @@ def prepare_dataset(config: ClaraConfig) -> list[dict[str, Any]]:
         f"(split={dataset_split}, streaming={dataset_streaming})"
     )
     print(f"[Data] Sample: q='{dataset[0]['question'][:80]}...' docs={len(dataset[0]['docs'])}\n")
-
     return dataset
 
 
@@ -128,36 +128,7 @@ def main() -> None:
             )
 
     # Extra dataset args (kept here to avoid overloading the config dataclass).
-    parser.add_argument(
-        "--dataset_name",
-        type=str,
-        default="apple/CLaRa_multi_stage",
-        help="HF dataset name (default: apple/CLaRa_multi_stage)",
-    )
-    parser.add_argument(
-        "--dataset_split",
-        type=str,
-        default="test",
-        help="HF split to use; use test for quick iteration.",
-    )
-    parser.add_argument(
-        "--dataset_streaming",
-        type=bool,
-        default=True,
-        help="Use streaming to avoid full download.",
-    )
-    parser.add_argument(
-        "--dataset_limit",
-        type=int,
-        default=64,
-        help="Max examples to stream/load.",
-    )
-    parser.add_argument(
-        "--dataset_export_jsonl",
-        type=str,
-        default="",
-        help="If set, export the streamed subset to JSONL at this path.",
-    )
+    # Note: dataset args are now in ClaraConfig to avoid duplication.
 
     args = parser.parse_args()
 
@@ -165,13 +136,6 @@ def main() -> None:
     for cfg_field in config_fields:
         if hasattr(args, cfg_field.name):
             setattr(config, cfg_field.name, getattr(args, cfg_field.name))
-
-    # Attach extra dataset args to config
-    config.dataset_name = args.dataset_name
-    config.dataset_split = args.dataset_split
-    config.dataset_streaming = args.dataset_streaming
-    config.dataset_limit = args.dataset_limit
-    config.dataset_export_jsonl = args.dataset_export_jsonl
 
     _main(config)
 

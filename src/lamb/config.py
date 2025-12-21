@@ -107,6 +107,13 @@ class ClaraConfig:
     debug_num_samples: int = 3  # Number of samples to generate in debug
     debug_repeat_dataset: int = 0  # Repeat dataset N times (0 = no repeat)
 
+    # Dataset (for CLI)
+    dataset_name: str = "apple/CLaRa_multi_stage"
+    dataset_split: str = "test"
+    dataset_streaming: bool = True
+    dataset_limit: int = 64
+    dataset_export_jsonl: str = ""
+
 
 # Backward compatibility alias
 LaMBConfig = ClaraConfig

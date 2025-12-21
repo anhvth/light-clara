@@ -53,6 +53,8 @@ uv run ruff format lamb/        # Format code
 ./scripts/improve_code.sh       # Auto-format, fix, and report errors
 ```
 
+**Important**: After any code changes or edits, always run `./scripts/improve_code.sh` to ensure code quality and fix any linting issues before proceeding.
+
 **Validation**: Use the utility scripts for comprehensive checks and fixes.
 
 ```bash
@@ -75,3 +77,6 @@ uv run ruff format lamb/        # Format code
 
 **Debugging**: Use `debug_reproduce_training()` for overfitting validation during training steps.</content>
 <parameter name="filePath">/Users/anhvth/projects/ml-clara-v2/.github/copilot-instructions.md
+
+NOTE:
+Always run ./scripts/improve_code.sh to ensure code quality before returning to user

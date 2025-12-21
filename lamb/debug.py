@@ -1,3 +1,4 @@
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -21,6 +22,7 @@ def debug_reproduce_training(  # noqa: PLR0912,PLR0915
     txt: str,
     max_print_tokens: int = 32,
     verbose: bool = False,
+    stats_out: Any = None,
 ) -> bool:
     tokenizer = model.tokenizer
     was_training = model.training
@@ -79,6 +81,13 @@ def debug_reproduce_training(  # noqa: PLR0912,PLR0915
     print(f"[Dbg] Teacher-forced next-token acc: {acc * 100:.2f}% ({sum(matches)}/{len(matches)})")
     print(f"[Dbg] LM loss (gold CE on t1..): {lm_loss:.6f}")
 
+    if stats_out is not None:
+        with contextlib.suppress(Exception):
+            stats_out["teacher_forced_acc"] = float(acc)
+            stats_out["lm_loss"] = float(lm_loss)
+            stats_out["teacher_forced_matches"] = int(sum(matches))
+            stats_out["teacher_forced_total"] = len(matches)
+
     if verbose:
         print("[Dbg] Token-by-token (gold_next vs pred_next):")
         for i in range(compare_n):
@@ -133,6 +142,10 @@ def debug_reproduce_training(  # noqa: PLR0912,PLR0915
     greedy_matches = False
     if len(tgt_ids) >= 1:
         greedy_matches = gen_ids[: len(tgt_ids)] == tgt_ids
+
+    if stats_out is not None:
+        with contextlib.suppress(Exception):
+            stats_out["greedy_matches"] = bool(greedy_matches)
 
     print(f"[Dbg] Teacher-forced SUCCESS: {success} (acc={acc:.4f}, lm_loss={lm_loss:.6f})")
     print(f"[Dbg] Greedy match: {greedy_matches}")

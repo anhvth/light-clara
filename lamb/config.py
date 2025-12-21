@@ -30,6 +30,13 @@ class LaMBConfig:
     debug_num_samples: int = 1
     verbose: bool = field(default_factory=lambda: env_flag("LAMB_VERBOSE"))
 
+    tensorboard: bool = field(default_factory=lambda: env_flag("LAMB_TENSORBOARD"))
+    tensorboard_logdir: str = "logs/tensorboard"
+    tensorboard_every_steps: int = 5
+    tensorboard_text_every_steps: int = 50
+
+    dataset_size: int = 20000
+
 
 def default_config() -> LaMBConfig:
     return LaMBConfig()

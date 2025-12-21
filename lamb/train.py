@@ -1,10 +1,18 @@
-from typing import TYPE_CHECKING, Any, List, Optional
+import json
+import os
+import time
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from lamb.debug import debug_reproduce_training
+
+try:
+    from torch.utils.tensorboard import SummaryWriter  # type: ignore
+except ImportError:
+    SummaryWriter = None
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizer
@@ -24,6 +32,36 @@ def train(  # noqa: PLR0912,PLR0915
     print(f"\n[Train] Starting Epoch on {len(dataset)} samples...")
     optimizer = torch.optim.AdamW(model.get_trainable_params(), lr=config.learning_rate)
     model.train()
+
+    writer = None
+    tb_enabled = bool(getattr(config, "tensorboard", False))
+    tb_logdir = str(getattr(config, "tensorboard_logdir", "logs/tensorboard"))
+    tb_every_steps = int(getattr(config, "tensorboard_every_steps", 0) or 0)
+    tb_text_every_steps = int(getattr(config, "tensorboard_text_every_steps", 0) or 0)
+
+    if tb_enabled:
+        if SummaryWriter is None:
+            print(
+                "[TB] TensorBoard logging requested but unavailable. "
+                "Install with: uv add tensorboard. "
+            )
+            writer = None
+        else:
+            run_dir = os.path.join(tb_logdir, time.strftime("%Y%m%d_%H%M%S"))
+            os.makedirs(run_dir, exist_ok=True)
+            writer = SummaryWriter(log_dir=run_dir)
+            print(f"[TB] Logging to {run_dir}")
+
+            try:
+                cfg_txt = json.dumps(config.__dict__, default=str, indent=2)
+            except Exception:
+                cfg_txt = str(config)
+            writer.add_text("run/config", cfg_txt, global_step=0)
+            writer.add_text(
+                "run/env",
+                f"device={config.device} dtype={config.dtype} attn={getattr(config, 'attn_implementation', None)}",
+                global_step=0,
+            )
 
     def collate_fn(batch: List[dict]) -> List[str]:
         return [b["content"] for b in batch]
@@ -56,6 +94,8 @@ def train(  # noqa: PLR0912,PLR0915
     for batch_txt in pbar:
         debug_txt: Optional[str] = None
         batch_loss, batch_correct, batch_total = 0.0, 0, 0
+        batch_kl, batch_ce, batch_alpha = 0.0, 0.0, 0.0
+        batch_count = 0
         for txt in batch_txt:
             debug_txt = txt
             splitter = "<|im_start|>assistant\n"
@@ -91,6 +131,12 @@ def train(  # noqa: PLR0912,PLR0915
             batch_correct += int(metrics.get("agree_correct", 0))
             batch_total += int(metrics.get("agree_total", 0))
 
+            scale = 1.0 / float(config.batch_size)
+            batch_kl += float(metrics.get("kl_loss", 0.0)) * scale
+            batch_ce += float(metrics.get("ce_loss", 0.0)) * scale
+            batch_alpha += float(metrics.get("ce_alpha", 0.0))
+            batch_count += 1
+
         optimizer.step()
         optimizer.zero_grad()
         step += 1
@@ -105,9 +151,29 @@ def train(  # noqa: PLR0912,PLR0915
         ):
             was_training = model.training
             try:
-                if debug_txt is not None and debug_reproduce_training(
-                    model, txt=debug_txt, verbose=config.verbose
-                ):
+                dbg_stats: Dict[str, Any] = {}
+                ok = False
+                if debug_txt is not None:
+                    ok = debug_reproduce_training(
+                        model,
+                        txt=debug_txt,
+                        verbose=config.verbose,
+                        stats_out=dbg_stats,
+                    )
+
+                if writer is not None and dbg_stats:
+                    if "teacher_forced_acc" in dbg_stats:
+                        writer.add_scalar(
+                            "dbg/teacher_forced_acc", dbg_stats["teacher_forced_acc"], step
+                        )
+                    if "lm_loss" in dbg_stats:
+                        writer.add_scalar("dbg/lm_loss", dbg_stats["lm_loss"], step)
+                    if "greedy_matches" in dbg_stats:
+                        writer.add_scalar(
+                            "dbg/greedy_matches", float(bool(dbg_stats["greedy_matches"])), step
+                        )
+
+                if ok:
                     print(f"[Train] Overfit success at step={step}; stopping.")
                     return
             finally:
@@ -116,11 +182,36 @@ def train(  # noqa: PLR0912,PLR0915
 
         avg_loss = float(batch_loss)
         avg_acc = (float(batch_correct) / float(batch_total)) if batch_total else 0.0
+        avg_kl = (float(batch_kl) / float(batch_count)) if batch_count else 0.0
+        avg_ce = (float(batch_ce) / float(batch_count)) if batch_count else 0.0
+        avg_alpha = (float(batch_alpha) / float(batch_count)) if batch_count else 0.0
         momentum = 0.9
         running_loss = momentum * running_loss + (1 - momentum) * avg_loss
         running_acc = momentum * running_acc + (1 - momentum) * avg_acc
 
         pbar.set_postfix(loss=f"{running_loss:.4f}", agree_acc=f"{running_acc * 100:.2f}%")
 
+        if writer is not None and tb_every_steps and (step % tb_every_steps == 0):
+            try:
+                lr = float(optimizer.param_groups[0].get("lr", 0.0))
+            except Exception:
+                lr = 0.0
+
+            writer.add_scalar("train/loss_step", avg_loss, step)
+            writer.add_scalar("train/loss_smoothed", running_loss, step)
+            writer.add_scalar("train/agree_acc_step", avg_acc, step)
+            writer.add_scalar("train/agree_acc_smoothed", running_acc, step)
+            writer.add_scalar("train/kl_loss_step", avg_kl, step)
+            writer.add_scalar("train/ce_loss_step", avg_ce, step)
+            writer.add_scalar("train/ce_alpha", avg_alpha, step)
+            writer.add_scalar("train/lr", lr, step)
+
+            if tb_text_every_steps and (step % tb_text_every_steps == 0) and debug_txt is not None:
+                writer.add_text("samples/raw", debug_txt[:2000], step)
+
         if step % 5 == 0 and config.device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    if writer is not None:
+        writer.flush()
+        writer.close()

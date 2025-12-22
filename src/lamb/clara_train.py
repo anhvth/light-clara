@@ -373,10 +373,21 @@ def train_stage1(
             # Additional debugging: check inputs to forward_with_memory
             if nan_guard and batch_idx <= 2:
                 print(f"[NaNGuard] Forward inputs batch={batch_idx}:")
-                print(f"  dec_input_ids: shape={dec_input_ids.shape} finite={torch.isfinite(dec_input_ids.float()).all()}")
+                print(f"  dec_input_ids: shape={dec_input_ids.shape} min={dec_input_ids.min().item()} max={dec_input_ids.max().item()}")
+                print(f"  vocab_size: {model.tokenizer.vocab_size}")
+                print(f"  any out_of_bounds: {(dec_input_ids >= model.tokenizer.vocab_size).any().item()}")
                 print(f"  dec_attention_mask: shape={dec_attention_mask.shape} finite={torch.isfinite(dec_attention_mask.float()).all()}")
-                print(f"  labels: shape={labels.shape} finite={torch.isfinite(labels.float()).all()}")
+                print(f"  labels: shape={labels.shape} min={labels.min().item()} max={labels.max().item()}")
                 print(f"  batch_memory_embeddings_tensor: shape={batch_memory_embeddings_tensor.shape} finite={torch.isfinite(batch_memory_embeddings_tensor).all()}")
+                
+                # Check for specific problematic values
+                if hasattr(model, 'mem_token_ids'):
+                    print(f"  mem_token_ids: {model.mem_token_ids}")
+                    print(f"  mem_tokens in dec_input_ids: {any(tid in dec_input_ids for tid in model.mem_token_ids)}")
+                
+                # Print first few tokens to see the sequence structure
+                print(f"  dec_input_ids[0][:20]: {dec_input_ids[0][:20].tolist()}")
+                print(f"  labels[0][:20]: {labels[0][:20].tolist()}")
 
             # Forward through decoder
             outputs = model.forward_with_memory(

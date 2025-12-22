@@ -8,6 +8,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 # Import only what we need to avoid triggering config table
 from transformers import AutoTokenizer
 
+from lamb.clara_collate import build_original_qa_prompt
+from lamb.clara_data import normalize_clara_record
+
 
 def build_memory_token_string(num_docs: int, num_mem_tokens: int, sep_token: str = "") -> str:
     """Build memory token string (copied from clara_collate to avoid imports)."""
@@ -20,11 +23,6 @@ def build_memory_token_string(num_docs: int, num_mem_tokens: int, sep_token: str
         return sep_token.join(doc_tokens) + sep_token
     else:
         return "".join(doc_tokens)
-
-
-# Import after defining helper
-from lamb.clara_collate import build_original_qa_prompt
-from lamb.clara_data import normalize_clara_record
 
 
 def test_multi_qa_data_normalization():
@@ -76,7 +74,7 @@ def test_multi_qa_prompt_building():
     questions = ["What is the capital?", "What is the population?", "What is the language?"]
     answers = ["Paris", "67 million", "French"]
 
-    prompt_text, prompt_len = build_original_qa_prompt(
+    prompt_text, _prompt_len = build_original_qa_prompt(
         tokenizer=tokenizer,
         question=questions,
         answer=answers,
@@ -107,7 +105,7 @@ def test_multi_qa_prompt_building():
     assert qa_count == 3, f"Expected 3 QA pairs, found {qa_count}"
 
     print(f"\n✓ Multi-QA prompt correctly formatted with {qa_count} QA pairs")
-    print(f"✓ Prompt length (before answers): {prompt_len} tokens")
+    print(f"✓ Prompt length (before answers): {_prompt_len} tokens")
 
 
 def test_single_qa_prompt_building():
@@ -115,7 +113,7 @@ def test_single_qa_prompt_building():
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
     tokenizer.add_tokens(["<SEP>"] + [f"<mem_{i}>" for i in range(8)], special_tokens=True)
 
-    prompt_text, prompt_len = build_original_qa_prompt(
+    prompt_text, _prompt_len = build_original_qa_prompt(
         tokenizer=tokenizer,
         question="What is the capital?",
         answer="Paris",

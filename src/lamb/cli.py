@@ -7,11 +7,13 @@ Supports multi-stage training:
 """
 
 import argparse
+import importlib.util
 import os
 import platform
 import sys
 from collections.abc import Sequence
 from dataclasses import MISSING, Field, fields
+from importlib import metadata
 from typing import Any
 
 import unsloth  # noqa: F401
@@ -38,11 +40,13 @@ def _maybe_print_env_diagnostics() -> None:
     print(f"[Env] sys.path[0:3]={sys.path[:3]}")
 
     try:
-        import numpy as np  # type: ignore
+        numpy_version = metadata.version("numpy")
+    except Exception:
+        numpy_version = "(not installed)"
 
-        print(f"[Env] numpy={np.__version__} file={getattr(np, '__file__', '')}")
-    except Exception as e:
-        print(f"[Env] numpy import failed: {type(e).__name__}: {e}")
+    numpy_spec = importlib.util.find_spec("numpy")
+    numpy_file = getattr(numpy_spec, "origin", None) if numpy_spec is not None else None
+    print(f"[Env] numpy={numpy_version} file={numpy_file}")
 
 
 def _format_clara_sft(tokenizer: Any, *, question: str, docs: list[str], answer: str) -> str:

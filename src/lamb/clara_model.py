@@ -258,19 +258,52 @@ class ClaraModel(nn.Module):
         )
 
     def _add_lora_adapters(self) -> None:
-        """Add LoRA adapter for CLaRa training.
+        """Add LoRA adapters for encoder and decoder.
 
-        Uses a SINGLE unified adapter for both encoder and decoder paths to ensure
-        gradients flow correctly during backward pass. Using separate adapters
-        causes gradient graph corruption when switching adapters mid-forward.
+        CLaRa uses TWO separate adapters:
+        - encoder_adapter: for document compression (encoder forward)
+        - decoder_adapter: for generation (decoder forward)
         """
-        # For Unsloth models, just use the default adapter (don't create separate ones)
+        # For Unsloth models, rename default adapter and add decoder adapter
         if self.config.qlora and hasattr(self, "_unsloth_needs_decoder_adapter"):
-            # Unsloth creates a default adapter - just use it as-is
-            # Don't rename or add additional adapters to avoid gradient issues
+            # Unsloth creates a default adapter - rename it to encoder_adapter
             existing_cfg = getattr(self.base_model, "peft_config", None)
             if existing_cfg and "default" in existing_cfg:
-                print("[CLaRa] Using Unsloth default adapter (unified for encoder+decoder)")
+                # Rename default to encoder_adapter
+                self.base_model.peft_config["encoder_adapter"] = self.base_model.peft_config.pop(
+                    "default"
+                )
+                # Set encoder adapter as active
+                self.base_model.set_adapter("encoder_adapter")
+                print("[CLaRa] Renamed default adapter to encoder_adapter")
+
+            # Add decoder adapter with potentially different rank
+            target_modules = [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ]
+
+            decoder_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                inference_mode=False,
+                r=self.config.decoder_lora_rank,
+                lora_alpha=self.config.lora_alpha,
+                lora_dropout=self.config.lora_dropout,
+                target_modules=target_modules,
+            )
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Already found a `peft_config` attribute in the model\.",
+                    category=UserWarning,
+                )
+                self.base_model.add_adapter("decoder_adapter", decoder_config)
 
             # Ensure all adapter parameters are trainable
             for name, param in self.base_model.named_parameters():
@@ -278,14 +311,14 @@ class ClaraModel(nn.Module):
                     param.requires_grad = True
 
             print(
-                f"[CLaRa] LoRA rank={self.config.encoder_lora_rank} (unified adapter for both paths)"
+                f"[CLaRa] Dual adapters: encoder_adapter (r={self.config.encoder_lora_rank}), decoder_adapter (r={self.config.decoder_lora_rank})"
             )
             return
 
-        # Standard PEFT initialization - use single adapter
+        # Standard PEFT initialization - dual adapters
         existing_cfg = getattr(self.base_model, "peft_config", None)
         if existing_cfg:
-            print("[CLaRa] Existing LoRA adapter detected; skipping adapter registration")
+            print("[CLaRa] Existing LoRA adapters detected; skipping adapter registration")
             return
 
         target_modules = [
@@ -298,8 +331,8 @@ class ClaraModel(nn.Module):
             "down_proj",
         ]
 
-        # Single unified adapter (for both document compression and generation)
-        lora_config = LoraConfig(
+        # Encoder adapter (for document compression)
+        encoder_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             inference_mode=False,
             r=self.config.encoder_lora_rank,
@@ -307,10 +340,30 @@ class ClaraModel(nn.Module):
             lora_dropout=self.config.lora_dropout,
             target_modules=target_modules,
         )
-        self.base_model = get_peft_model(self.base_model, lora_config)
+        self.base_model = get_peft_model(
+            self.base_model, encoder_config, adapter_name="encoder_adapter"
+        )
+
+        # Decoder adapter (for generation)
+        decoder_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            inference_mode=False,
+            r=self.config.decoder_lora_rank,
+            lora_alpha=self.config.lora_alpha,
+            lora_dropout=self.config.lora_dropout,
+            target_modules=target_modules,
+        )
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Already found a `peft_config` attribute in the model\.",
+                category=UserWarning,
+            )
+            self.base_model.add_adapter("decoder_adapter", decoder_config)
 
         print(
-            f"[CLaRa] Added LoRA adapter (r={self.config.encoder_lora_rank}, unified for encoder+decoder)"
+            f"[CLaRa] Dual adapters: encoder_adapter (r={self.config.encoder_lora_rank}), decoder_adapter (r={self.config.decoder_lora_rank})"
         )
 
     def compress_documents(
@@ -335,7 +388,10 @@ class ClaraModel(nn.Module):
         self, doc_input_ids: torch.Tensor, doc_attention_mask: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Custom compression: cross-attention pooling (our method)."""
-        # Encode documents (using unified adapter)
+        # Set encoder adapter
+        self.base_model.set_adapter("encoder_adapter")
+
+        # Encode documents
         with torch.set_grad_enabled(self.training):
             encoder_outputs = self.base_model(
                 input_ids=doc_input_ids,
@@ -378,7 +434,10 @@ class ClaraModel(nn.Module):
             dim=1,
         )
 
-        # Forward through model with memory tokens in sequence (using unified adapter)
+        # Set encoder adapter
+        self.base_model.set_adapter("encoder_adapter")
+
+        # Forward through model with memory tokens in sequence
         with torch.set_grad_enabled(self.training):
             outputs = self.base_model(
                 input_ids=input_ids_with_mem,
@@ -416,7 +475,10 @@ class ClaraModel(nn.Module):
         Returns:
             dict with 'logits', 'loss' (if labels provided)
         """
-        # Replace memory token IDs with actual embeddings (using unified adapter)
+        # Set decoder adapter
+        self.base_model.set_adapter("decoder_adapter")
+
+        # Replace memory token IDs with actual embeddings
         inputs_embeds = self._replace_memory_tokens(input_ids, memory_embeddings)
 
         # Forward through decoder

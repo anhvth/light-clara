@@ -16,7 +16,10 @@ from dataclasses import MISSING, Field, fields
 from importlib import metadata
 from typing import Any
 
-import unsloth  # noqa: F401
+try:
+    import unsloth  # noqa: F401
+except ImportError:
+    pass
 
 try:
     from tabulate import tabulate

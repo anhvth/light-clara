@@ -208,6 +208,9 @@ def train(
             and step % int(config.debug_every_steps) == 0
         ):
             was_training = model.training
+            import ipdb
+
+            ipdb.set_trace()
             try:
                 dbg_stats: dict[str, Any] = {}
                 if debug_txt is not None:

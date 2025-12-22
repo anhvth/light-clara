@@ -1,6 +1,10 @@
 """CLaRa Training Loop - Stage 1 (Compression Pretraining)."""
 
+import contextlib
+import io
 import os
+import re
+import sys
 import time
 from typing import Any
 
@@ -22,6 +26,28 @@ try:
     import ipdb
 except ImportError:
     ipdb = None  # type: ignore
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", str(s))
+
+
+class _Tee(io.TextIOBase):
+    def __init__(self, *streams: Any):
+        self._streams = streams
+
+    def write(self, s: str) -> int:
+        for st in self._streams:
+            st.write(s)
+        return len(s)
+
+    def flush(self) -> None:
+        for st in self._streams:
+            with contextlib.suppress(Exception):
+                st.flush()
 
 
 def train_stage1(
@@ -142,7 +168,7 @@ def train_stage1(
     running_paraphrase_loss = 0.0
     running_mse_loss = 0.0
     running_total_loss = 0.0
-    log_every = config.tensorboard_every_steps
+    log_every = int(getattr(config, "tensorboard_every_steps", 0) or 0)
 
     pbar = tqdm(dataloader, desc="Stage1 Training", dynamic_ncols=True)
 
@@ -259,7 +285,7 @@ def train_stage1(
             running_total_loss += total_loss.item() * config.gradient_accumulation_steps
 
             # Log to tensorboard
-            if writer and global_step % log_every == 0:
+            if writer and log_every and global_step % log_every == 0:
                 avg_qa = running_qa_loss / log_every
                 avg_para = running_paraphrase_loss / log_every
                 avg_mse = running_mse_loss / log_every
@@ -290,11 +316,26 @@ def train_stage1(
 
             # Debug generation
             if config.debug_mode and global_step % config.debug_every_steps == 0:
+                tb_chunks: list[str] = []
                 for debug_idx in range(min(config.debug_num_samples, batch_size)):
+                    buf = io.StringIO()
+                    tee = _Tee(sys.stdout, buf)
                     try:
-                        debug_reproduce_clara(model, batch, config, sample_idx=debug_idx)
+                        with contextlib.redirect_stdout(tee):
+                            debug_reproduce_clara(model, batch, config, sample_idx=debug_idx)
                     except Exception as e:
                         print(f"\x1b[91m[Debug] Generation failed: {e}\x1b[0m")
+                        buf.write(f"\n[Debug] Generation failed: {e}\n")
+                    tb_chunks.append(_strip_ansi(buf.getvalue()))
+
+                # Exactly one TensorBoard text event per step.
+                if writer is not None and tb_chunks:
+                    full = "".join(tb_chunks).strip()
+                    max_chars = 30_000
+                    if len(full) > max_chars:
+                        full = full[:max_chars] + f"\n…(+{len(full) - max_chars} chars truncated)"
+                    if full:
+                        writer.add_text("debug/step", full, global_step)
 
             # Save checkpoint
             if config.save_steps > 0 and global_step % config.save_steps == 0:

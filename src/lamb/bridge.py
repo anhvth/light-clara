@@ -106,19 +106,11 @@ class DocumentCompressor(nn.Module):
         num_memory_tokens: int = 32,
         use_mlp: bool = True,
         mlp_hidden_dim: int | None = None,
-        encoder_pool_method: str = "token_softmax",
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.num_memory_tokens = num_memory_tokens
         self.use_mlp = use_mlp
-        self.encoder_pool_method = encoder_pool_method
-
-        if encoder_pool_method != "token_softmax":
-            print(
-                f"[Compressor] encoder_pool_method={encoder_pool_method!r} is deprecated; "
-                "using token_softmax routing"
-            )
 
         self.attention_compressor = AttentionCompressor(
             dim=hidden_size, num_heads=8, target_len=num_memory_tokens

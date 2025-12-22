@@ -108,7 +108,6 @@ class ClaraModel(nn.Module):
                 num_memory_tokens=config.compress_rate,
                 use_mlp=config.use_compressor_mlp,
                 mlp_hidden_dim=config.compressor_mlp_hidden_dim,
-                encoder_pool_method=config.encoder_pool_method,
             ).to(device=device, dtype=dtype)
             print("[CLaRa] Using custom compression: cross-attention pooling")
 
@@ -321,7 +320,7 @@ class ClaraModel(nn.Module):
             target_modules=target_modules,
         )
         if "encoder_adapter" not in existing_adapters:
-            self.base_model.add_adapter(encoder_config, "encoder_adapter")
+            self.base_model.add_adapter("encoder_adapter", encoder_config)
 
         # Decoder adapter (for generation)
         decoder_config = LoraConfig(
@@ -341,7 +340,7 @@ class ClaraModel(nn.Module):
                     message=r"Already found a `peft_config` attribute in the model\.",
                     category=UserWarning,
                 )
-                self.base_model.add_adapter(decoder_config, "decoder_adapter")
+                self.base_model.add_adapter("decoder_adapter", decoder_config)
 
         print(
             f"[CLaRa] Added LoRA adapters (encoder r={self.config.encoder_lora_rank}, decoder r={self.config.decoder_lora_rank})"

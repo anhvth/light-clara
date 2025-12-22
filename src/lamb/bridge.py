@@ -12,23 +12,13 @@ def _masked_mean(x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
     return (x * mask_f.unsqueeze(-1)).sum(dim=1) / denom
 
 
-def _masked_max(x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
-    if mask is None:
-        return x.max(dim=1).values
-
-    # Mask out padding with a large negative value (dtype-safe)
-    neg = torch.finfo(x.dtype).min
-    x_masked = x.masked_fill(mask.unsqueeze(-1) == 0, neg)
-    return x_masked.max(dim=1).values
-
-
 class DocumentCompressor(nn.Module):
     """Compresses documents into fixed-size memory token embeddings.
 
     Based on Apple's CLaRa architecture:
     - Encodes documents through base model with encoder adapter
-    - Mean-pools encoder hidden states
-    - Projects to num_memory_tokens embeddings via learnable projection
+    - Routes sequence tokens to memory tokens with learned token-softmax weights
+    - Optionally refines each memory token with a per-token MLP
     """
 
     def __init__(
@@ -37,7 +27,7 @@ class DocumentCompressor(nn.Module):
         num_memory_tokens: int = 32,
         use_mlp: bool = True,
         mlp_hidden_dim: int | None = None,
-        encoder_pool_method: str = "mean",
+        encoder_pool_method: str = "token_softmax",
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -45,36 +35,26 @@ class DocumentCompressor(nn.Module):
         self.use_mlp = use_mlp
         self.encoder_pool_method = encoder_pool_method
 
-        # Pooling modules (only created when needed)
-        if self.encoder_pool_method == "mpl":
-            self.pool_mpl = nn.Sequential(
-                nn.Linear(hidden_size, hidden_size, bias=False),
-                nn.GELU(),
-                nn.Linear(hidden_size, hidden_size, bias=False),
+        if encoder_pool_method != "token_softmax":
+            print(
+                f"[Compressor] encoder_pool_method={encoder_pool_method!r} is deprecated; "
+                "using token_softmax routing"
             )
-        elif self.encoder_pool_method == "nearn":
-            # Learnable attention pooling: score each token -> softmax -> weighted sum
-            self.pool_score = nn.Linear(hidden_size, 1, bias=False)
-        elif self.encoder_pool_method in {"mean", "max"}:
-            pass
-        else:
-            raise ValueError(
-                "encoder_pool_method must be one of: 'mean', 'mpl', 'nearn', 'max' "
-                f"(got: {self.encoder_pool_method!r})"
-            )
+
+        # Token-wise router: produce per-memory token weights across the sequence.
+        self.router = nn.Linear(hidden_size, num_memory_tokens, bias=False)
+        self.router_activation = nn.GELU()
 
         if use_mlp:
             mlp_hidden_dim = mlp_hidden_dim or hidden_size * 4
             self.compress_mlp = nn.Sequential(
                 nn.Linear(hidden_size, mlp_hidden_dim, bias=False),
                 nn.GELU(),
-                nn.Linear(mlp_hidden_dim, num_memory_tokens * hidden_size, bias=False),
+                nn.Linear(mlp_hidden_dim, hidden_size, bias=False),
             )
         else:
-            # Simple linear projection
-            self.compress_linear = nn.Linear(
-                hidden_size, num_memory_tokens * hidden_size, bias=False
-            )
+            # Simple linear projection per memory token
+            self.compress_linear = nn.Linear(hidden_size, hidden_size, bias=False)
 
         # Layer norm for compressed representations
         self.compress_norm = nn.LayerNorm(hidden_size)
@@ -86,7 +66,7 @@ class DocumentCompressor(nn.Module):
 
         print(
             f"[Compressor] {hidden_size} -> {num_memory_tokens} memory tokens "
-            f"({'MLP' if use_mlp else 'Linear'}), pool={self.encoder_pool_method}"
+            f"({'MLP' if use_mlp else 'Linear'}), routing=token_softmax"
         )
 
     def forward(
@@ -101,31 +81,22 @@ class DocumentCompressor(nn.Module):
         Returns:
             memory_embeddings: [batch, num_memory_tokens, hidden_size]
         """
-        # Pool across sequence length
-        # Shape: [batch, hidden_size]
-        if self.encoder_pool_method == "mean":
-            pooled = _masked_mean(encoder_hidden_states, attention_mask)
-        elif self.encoder_pool_method == "max":
-            pooled = _masked_max(encoder_hidden_states, attention_mask)
-        elif self.encoder_pool_method == "mpl":
-            encoded = self.pool_mpl(encoder_hidden_states)
-            pooled = _masked_mean(encoded, attention_mask)
-        elif self.encoder_pool_method == "nearn":
-            scores = self.pool_score(encoder_hidden_states).squeeze(-1)
-            if attention_mask is not None:
-                scores = scores.masked_fill(attention_mask == 0, -1e9)
-            weights = torch.softmax(scores.float(), dim=1).to(dtype=encoder_hidden_states.dtype)
-            pooled = (encoder_hidden_states * weights.unsqueeze(-1)).sum(dim=1)
-        else:  # pragma: no cover
-            raise RuntimeError(f"Unexpected pool method: {self.encoder_pool_method!r}")
+        # Token-softmax router: map sequence length -> num_memory_tokens without collapsing first
+        # Shape: [batch, seq_len, num_memory_tokens]
+        scores = self.router_activation(self.router(encoder_hidden_states))
+        if attention_mask is not None:
+            scores = scores.masked_fill(attention_mask.unsqueeze(-1) == 0, -1e9)
+        weights = torch.softmax(scores.float(), dim=1).to(dtype=encoder_hidden_states.dtype)
 
-        # Project to memory token space
-        compressed = self.compress_mlp(pooled) if self.use_mlp else self.compress_linear(pooled)
+        # Weighted sum for each memory token: [batch, num_memory_tokens, hidden_size]
+        memory_embeddings = torch.einsum("bsh,bsn->bnh", encoder_hidden_states, weights)
 
-        # Reshape to memory tokens
-        # Shape: [batch, num_memory_tokens, hidden_size]
-        batch_size = encoder_hidden_states.size(0)
-        memory_embeddings = compressed.view(batch_size, self.num_memory_tokens, self.hidden_size)
+        # Optional per-memory MLP
+        memory_embeddings = (
+            self.compress_mlp(memory_embeddings)
+            if self.use_mlp
+            else self.compress_linear(memory_embeddings)
+        )
 
         # Normalize
         memory_embeddings = self.compress_norm(memory_embeddings)

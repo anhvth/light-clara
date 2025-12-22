@@ -1,4 +1,4 @@
-uv run lamb \
+python -m lamb.cli \
   --stage stage1 \
   --dataset_limit 100000 \
   --dataset_split test \

@@ -70,6 +70,7 @@ class ClaraConfig:
     decoder_lora_rank: int = 16
     lora_alpha: int = 16
     lora_dropout: float = 0.05
+    qlora: bool = False  # Use Unsloth 4-bit QLoRA to reduce memory
 
     # Loss weights
     use_mse_loss: bool = True

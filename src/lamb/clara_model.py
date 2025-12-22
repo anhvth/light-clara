@@ -17,6 +17,14 @@ from lamb.bridge import DocumentCompressor
 from lamb.config import ClaraConfig
 from lamb.utils import pick_attn_implementation, pick_dtype
 
+# Unsloth for QLoRA (optional)
+try:
+    from unsloth import FastLanguageModel
+
+    UNSLOTH_AVAILABLE = True
+except ImportError:
+    UNSLOTH_AVAILABLE = False
+
 
 class ClaraModel(nn.Module):
     """CLaRa: Compressing Language for Retrieval Augmentation.
@@ -34,7 +42,76 @@ class ClaraModel(nn.Module):
 
         print(f"[CLaRa] Loading base model: {config.model_name}...")
 
-        # Load base model
+        # Check if QLoRA is requested
+        if config.qlora:
+            if not UNSLOTH_AVAILABLE:
+                raise ImportError(
+                    "QLoRA requested but Unsloth is not installed. Install with: uv add unsloth"
+                )
+            print("[CLaRa] Using Unsloth 4-bit QLoRA for memory-efficient training")
+            self._init_with_unsloth(config)
+        else:
+            self._init_standard(config)
+
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, trust_remote_code=True)
+        if getattr(config, "chat_template", ""):
+            template_name = str(config.chat_template)
+            temp_tokenizer = AutoTokenizer.from_pretrained(
+                template_name,
+                trust_remote_code=True,
+            )
+            if not getattr(temp_tokenizer, "chat_template", None):
+                raise ValueError(f"chat_template={template_name!r} did not provide a chat_template")
+            self.tokenizer.chat_template = temp_tokenizer.chat_template
+            print(f"[CLaRa] tokenizer.chat_template copied from {template_name}")
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # Add memory tokens to vocabulary
+        self._add_memory_tokens()
+
+        # Handle adapters based on initialization method
+        if config.qlora:
+            # For Unsloth, we need to add decoder adapter after initialization
+            self._add_lora_adapters()
+        else:
+            # Freeze base model (only for standard initialization)
+            for param in self.base_model.parameters():
+                param.requires_grad = False
+
+            # Add LoRA adapters
+            self._add_lora_adapters()
+
+        # Create document compressor
+        hidden_size = self.base_model.config.hidden_size
+
+        # Get device and dtype for compressor
+        dtype = (
+            config.dtype
+            if isinstance(getattr(config, "dtype", None), torch.dtype)
+            else pick_dtype(config.device)
+        )
+        device = torch.device(config.device)
+
+        # Use original compression (decoder with mem tokens in input) or custom (cross-attention)
+        if config.use_clara_original:
+            self.compressor = None  # Original method doesn't use separate compressor
+            print("[CLaRa] Using original compression: memory tokens in input sequence")
+        else:
+            self.compressor = DocumentCompressor(
+                hidden_size=hidden_size,
+                num_memory_tokens=config.compress_rate,
+                use_mlp=config.use_compressor_mlp,
+                mlp_hidden_dim=config.compressor_mlp_hidden_dim,
+                encoder_pool_method=config.encoder_pool_method,
+            ).to(device=device, dtype=dtype)
+            print("[CLaRa] Using custom compression: cross-attention pooling")
+
+        print(f"[CLaRa] Model initialized. Stage: {config.stage}")
+
+    def _init_standard(self, config: ClaraConfig) -> None:
+        """Initialize model with standard transformers + PEFT."""
         dtype = (
             config.dtype
             if isinstance(getattr(config, "dtype", None), torch.dtype)
@@ -65,49 +142,50 @@ class ClaraModel(nn.Module):
 
         cast(torch.nn.Module, self.base_model).to(device=device)
 
-        # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, trust_remote_code=True)
-        if getattr(config, "chat_template", ""):
-            template_name = str(config.chat_template)
-            temp_tokenizer = AutoTokenizer.from_pretrained(
-                template_name,
-                trust_remote_code=True,
-            )
-            if not getattr(temp_tokenizer, "chat_template", None):
-                raise ValueError(f"chat_template={template_name!r} did not provide a chat_template")
-            self.tokenizer.chat_template = temp_tokenizer.chat_template
-            print(f"[CLaRa] tokenizer.chat_template copied from {template_name}")
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+    def _init_with_unsloth(self, config: ClaraConfig) -> None:
+        """Initialize model with Unsloth 4-bit QLoRA."""
+        # Unsloth uses its own dtype handling, so we pass max_seq_length
+        max_seq_length = config.max_seq_len
 
-        # Add memory tokens to vocabulary
-        self._add_memory_tokens()
+        # Target modules for LoRA
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ]
 
-        # Freeze base model
-        for param in self.base_model.parameters():
-            param.requires_grad = False
+        # Load model with Unsloth FastLanguageModel
+        # Note: Unsloth creates both model and tokenizer, but we only use the model here
+        # since we need to handle tokenizer separately for chat templates
+        model, _ = FastLanguageModel.from_pretrained(
+            model_name=config.model_name,
+            max_seq_length=max_seq_length,
+            dtype=None,  # Auto-detect
+            load_in_4bit=True,  # Enable 4-bit quantization
+        )
 
-        # Add LoRA adapters
-        self._add_lora_adapters()
+        # Add LoRA with Unsloth (creates encoder_adapter by default)
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=config.encoder_lora_rank,
+            target_modules=target_modules,
+            lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
+            bias="none",
+            use_gradient_checkpointing="unsloth",  # Unsloth's optimized checkpointing
+            random_state=42,
+        )
 
-        # Create document compressor
-        hidden_size = self.base_model.config.hidden_size
+        self.base_model = model
 
-        # Use original compression (decoder with mem tokens in input) or custom (cross-attention)
-        if config.use_clara_original:
-            self.compressor = None  # Original method doesn't use separate compressor
-            print("[CLaRa] Using original compression: memory tokens in input sequence")
-        else:
-            self.compressor = DocumentCompressor(
-                hidden_size=hidden_size,
-                num_memory_tokens=config.compress_rate,
-                use_mlp=config.use_compressor_mlp,
-                mlp_hidden_dim=config.compressor_mlp_hidden_dim,
-                encoder_pool_method=config.encoder_pool_method,
-            ).to(device=device, dtype=dtype)
-            print("[CLaRa] Using custom compression: cross-attention pooling")
-
-        print(f"[CLaRa] Model initialized. Stage: {config.stage}")
+        # For Unsloth models, we need to manually add a second adapter for decoder
+        # We'll rename the default adapter to encoder_adapter and add decoder_adapter
+        # This is handled in a separate method after tokenizer setup
+        self._unsloth_needs_decoder_adapter = True
 
     def _add_memory_tokens(self) -> None:
         """Add memory tokens (<mem_0>, <mem_1>, ...) to tokenizer and model."""
@@ -164,6 +242,51 @@ class ClaraModel(nn.Module):
 
     def _add_lora_adapters(self) -> None:
         """Add LoRA adapters for encoder and decoder."""
+        # For Unsloth models, we need to handle adapter naming differently
+        if self.config.qlora and hasattr(self, "_unsloth_needs_decoder_adapter"):
+            # Unsloth creates a default adapter, rename it to encoder_adapter
+            existing_cfg = getattr(self.base_model, "peft_config", None)
+            if existing_cfg and "default" in existing_cfg:
+                # Rename default to encoder_adapter
+                self.base_model.peft_config["encoder_adapter"] = self.base_model.peft_config.pop(
+                    "default"
+                )
+                print("[CLaRa] Renamed Unsloth default adapter to encoder_adapter")
+
+            # Add decoder adapter
+            target_modules = [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ]
+
+            decoder_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                inference_mode=False,
+                r=self.config.decoder_lora_rank,
+                lora_alpha=self.config.lora_alpha,
+                lora_dropout=self.config.lora_dropout,
+                target_modules=target_modules,
+            )
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Already found a `peft_config` attribute in the model\.",
+                    category=UserWarning,
+                )
+                self.base_model.add_adapter(decoder_config, adapter_name="decoder_adapter")
+
+            print(
+                f"[CLaRa] Added decoder adapter for Unsloth (encoder r={self.config.encoder_lora_rank}, decoder r={self.config.decoder_lora_rank})"
+            )
+            return
+
+        # Standard PEFT initialization
         existing_cfg = getattr(self.base_model, "peft_config", None)
         existing_adapters: set[str] = set()
         if isinstance(existing_cfg, dict):

@@ -1,4 +1,4 @@
-python -m lamb.cli \
+uv run lamb \
   --stage stage1 \
   --dataset_limit 100000 \
   --dataset_split test \
@@ -17,6 +17,7 @@ python -m lamb.cli \
   --debug_num_samples 1 \
   --debug_repeat_dataset 100 \
   --report_to tensorboard \
-  --use_clara_original True
-  
+  --use_clara_original True \
+  --qlora True
+
   # --chat_template Qwen/Qwen3-4B-Instruct-2507 \

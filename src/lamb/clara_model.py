@@ -286,6 +286,14 @@ class ClaraModel(nn.Module):
                 )
                 self.base_model.add_adapter("decoder_adapter", decoder_config)
 
+            # Enable both adapters for training
+            self.base_model.enable_adapters()
+
+            # Ensure all adapter parameters are trainable
+            for name, param in self.base_model.named_parameters():
+                if "lora" in name.lower() or "encoder_adapter" in name or "decoder_adapter" in name:
+                    param.requires_grad = True
+
             print(
                 f"[CLaRa] Added decoder adapter for Unsloth (encoder r={self.config.encoder_lora_rank}, decoder r={self.config.decoder_lora_rank})"
             )

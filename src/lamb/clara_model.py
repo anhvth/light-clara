@@ -66,6 +66,18 @@ class ClaraModel(nn.Module):
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, trust_remote_code=True)
+        if getattr(config, "tokenizer_template", ""):
+            template_name = str(config.tokenizer_template)
+            temp_tokenizer = AutoTokenizer.from_pretrained(
+                template_name,
+                trust_remote_code=True,
+            )
+            if not getattr(temp_tokenizer, "chat_template", None):
+                raise ValueError(
+                    f"tokenizer_template={template_name!r} did not provide a chat_template"
+                )
+            self.tokenizer.chat_template = temp_tokenizer.chat_template
+            print(f"[CLaRa] tokenizer.chat_template copied from {template_name}")
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 

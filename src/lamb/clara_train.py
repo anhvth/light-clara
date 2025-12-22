@@ -54,11 +54,55 @@ def train_stage1(
             f"\x1b[92m[Debug Mode] Enabled - will show color-coded tokens every {config.debug_every_steps} steps\x1b[0m"
         )
 
-    # Setup optimizer
+    # Setup optimizer with different learning rates:
+    # - encoder side: encoder_adapter + compressor + memory token embeddings
+    # - generator side: decoder_adapter (default 10x slower)
+    encoder_lr = float(getattr(config, "learning_rate", 0.0) or 0.0)
+    if encoder_lr <= 0:
+        raise ValueError(f"learning_rate must be > 0, got {encoder_lr}")
+
+    gen_lr_cfg = float(getattr(config, "generator_learning_rate", 0.0) or 0.0)
+    generator_lr = gen_lr_cfg if gen_lr_cfg > 0 else (encoder_lr / 10.0)
+
+    encoder_params: list[torch.nn.Parameter] = []
+    generator_params: list[torch.nn.Parameter] = []
+    seen: set[int] = set()
+
+    for name, param in model.base_model.named_parameters():
+        if not param.requires_grad:
+            continue
+        pid = id(param)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        if "decoder_adapter" in name:
+            generator_params.append(param)
+        else:
+            encoder_params.append(param)
+
+    for param in model.compressor.parameters():
+        if not param.requires_grad:
+            continue
+        pid = id(param)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        encoder_params.append(param)
+
+    if not encoder_params and not generator_params:
+        raise RuntimeError("No trainable parameters found for optimizer")
+
     optimizer = torch.optim.AdamW(
-        model.get_trainable_params(),
-        lr=config.learning_rate,
+        [
+            {"params": encoder_params, "lr": encoder_lr},
+            {"params": generator_params, "lr": generator_lr},
+        ],
         weight_decay=0.01,
+    )
+
+    print(
+        f"[Train Stage 1] LR encoder={encoder_lr:g} generator={generator_lr:g} "
+        f"(generator is {'custom' if gen_lr_cfg > 0 else 'learning_rate/10'})"
     )
 
     # Setup data loader
@@ -84,6 +128,9 @@ def train_stage1(
         os.makedirs(run_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=run_dir)
         print(f"[TensorBoard] Logging to {run_dir}")
+
+        writer.add_scalar("train/lr_encoder", encoder_lr, global_step=0)
+        writer.add_scalar("train/lr_generator", generator_lr, global_step=0)
 
     # Training loop
     model.train()
@@ -222,7 +269,8 @@ def train_stage1(
                 writer.add_scalar("train/paraphrase_loss", avg_para, global_step)
                 writer.add_scalar("train/mse_loss", avg_mse, global_step)
                 writer.add_scalar("train/total_loss", avg_total, global_step)
-                writer.add_scalar("train/learning_rate", config.learning_rate, global_step)
+                writer.add_scalar("train/lr_encoder", encoder_lr, global_step)
+                writer.add_scalar("train/lr_generator", generator_lr, global_step)
 
                 running_qa_loss = 0.0
                 running_paraphrase_loss = 0.0

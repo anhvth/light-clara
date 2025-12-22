@@ -47,6 +47,10 @@ class ClaraConfig:
     # Model
     model_name: str = "Qwen/Qwen3-0.6B"
 
+    # Tokenizer
+    # If set, loads this tokenizer and copies its chat_template onto the main tokenizer.
+    tokenizer_template: str = ""
+
     # Training stage
     stage: str = "stage1"  # stage1, stage1_2, stage2
 
@@ -77,6 +81,8 @@ class ClaraConfig:
     # Training
     batch_size: int = 2
     learning_rate: float = 1e-4
+    # If 0, defaults to learning_rate / 10 (generator is 10x slower than encoder).
+    generator_learning_rate: float = 0.0
     max_steps: int = 10000
     gradient_accumulation_steps: int = 1
     max_grad_norm: float = 1.0

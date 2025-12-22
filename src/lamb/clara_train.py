@@ -536,16 +536,47 @@ def train_stage1(
         if (batch_idx + 1) % config.gradient_accumulation_steps == 0:
             # Check gradients for NaN/Inf before stepping
             grad_ok = True
+            nan_grad_params: list[str] = []
             if nan_guard:
-                for p in model.get_trainable_params():
+                # Check embedding layer specifically first
+                embed_layer = model.base_model.get_input_embeddings()
+                if embed_layer.weight.grad is not None:
+                    embed_grad = embed_layer.weight.grad
+                    finite_count = torch.isfinite(embed_grad).sum().item()
+                    total_count = embed_grad.numel()
+                    if finite_count != total_count:
+                        print(f"  [NaNGuard] Embedding grad: finite={finite_count}/{total_count}")
+                        # Check specifically memory token positions
+                        mem_start = len(model.tokenizer) - 9  # 8 mem + 1 sep
+                        mem_grad = embed_grad[mem_start:]
+                        mem_finite = torch.isfinite(mem_grad).sum().item()
+                        print(
+                            f"  [NaNGuard] Memory token grad: finite={mem_finite}/{mem_grad.numel()}"
+                        )
+                        # Check non-memory tokens
+                        non_mem_grad = embed_grad[:mem_start]
+                        non_mem_finite = torch.isfinite(non_mem_grad).sum().item()
+                        print(
+                            f"  [NaNGuard] Non-mem token grad: finite={non_mem_finite}/{non_mem_grad.numel()}"
+                        )
+
+                for name, p in model.base_model.named_parameters():
                     if p.grad is not None and not torch.isfinite(p.grad).all():
                         grad_ok = False
-                        break
+                        nan_grad_params.append(name)
+                        if len(nan_grad_params) <= 5:  # Only show first 5
+                            grad_finite = torch.isfinite(p.grad).sum().item()
+                            grad_total = p.grad.numel()
+                            print(
+                                f"  [NaNGuard] NaN grad in: {name} finite={grad_finite}/{grad_total}"
+                            )
                 if not grad_ok:
                     skipped_non_finite += 1
                     print(
-                        f"\x1b[91m[NaNGuard] Non-finite gradients at step={global_step} batch={batch_idx} (skipped={skipped_non_finite})\x1b[0m"
+                        f"\x1b[91m[NaNGuard] Non-finite gradients at step={global_step} "
+                        f"batch={batch_idx} (skipped={skipped_non_finite})\x1b[0m"
                     )
+                    print(f"  Total params with NaN grads: {len(nan_grad_params)}")
                     optimizer.zero_grad(set_to_none=True)
                     continue
 

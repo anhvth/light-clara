@@ -29,6 +29,9 @@ def compute_mse_loss_original(
     Returns:
         mse_loss: scalar
     """
+    # Cast to float32 for numerical stability with 4-bit models
+    hidden_states = hidden_states.float()
+
     # Create mask for memory token positions
     mem_token_ids_set = set(mem_token_ids.tolist())
     batch_size, seq_len, _hidden_size = hidden_states.shape
@@ -45,8 +48,8 @@ def compute_mse_loss_original(
     non_mem_mask = (~mem_mask) & attn
 
     # Compute means
-    mem_len = mem_mask.sum(dim=1, keepdim=True).clamp_min(1.0)
-    non_mem_len = non_mem_mask.sum(dim=1, keepdim=True).clamp_min(1.0)
+    mem_len = mem_mask.sum(dim=1, keepdim=True).float().clamp_min(1.0)
+    non_mem_len = non_mem_mask.sum(dim=1, keepdim=True).float().clamp_min(1.0)
 
     mem_sum = (hidden_states * mem_mask.unsqueeze(-1)).sum(dim=1)
     non_mem_sum = (hidden_states * non_mem_mask.unsqueeze(-1)).sum(dim=1)

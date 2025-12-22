@@ -488,9 +488,15 @@ class ClaraModel(nn.Module):
             return_dict=True,
         )
 
+        # Cast loss to float32 for numerical stability with 4-bit models
+        # (matches original CLaRa pattern: output["logits"].to(torch.float32))
+        loss = outputs.loss
+        if loss is not None:
+            loss = loss.float()
+
         return {
             "logits": outputs.logits,
-            "loss": outputs.loss if labels is not None else None,
+            "loss": loss,
         }
 
     def _replace_memory_tokens(

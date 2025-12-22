@@ -528,14 +528,36 @@ class ClaraModel(nn.Module):
         if not batch_indices:
             return base_embeds
 
-        # Create replacement tensor using scatter without in-place operations
-        # Start by cloning base embeddings (no longer part of original computation graph)
-        inputs_embeds = base_embeds.detach().clone()
-        inputs_embeds.requires_grad = True
+        # Create replacement tensor without in-place operations
+        # Clone base embeddings to avoid modifying original computation graph
+        inputs_embeds = base_embeds.clone()
 
-        # Now we can safely do in-place operations on the cloned tensor
-        for b, s, m in zip(batch_indices, seq_indices, mem_indices, strict=True):
-            inputs_embeds[b, s] = memory_embeddings[b, m]
+        # Build replacement mask and gather memory embeddings
+        # This avoids in-place operations that can break autograd
+        replacement_mask = torch.zeros(
+            batch_size, seq_len, dtype=torch.bool, device=base_embeds.device
+        )
+        for b, s in zip(batch_indices, seq_indices, strict=True):
+            replacement_mask[b, s] = True
+
+        # Prepare memory embeddings in the correct positions
+        mem_embeds_flat = memory_embeddings.reshape(-1, memory_embeddings.size(-1))
+        assert len(batch_indices) == mem_embeds_flat.size(0), "Mismatch in memory token count"
+
+        # Use scatter operation to replace embeddings (no in-place modification)
+        inputs_embeds = torch.where(
+            replacement_mask.unsqueeze(-1).expand_as(base_embeds),
+            torch.zeros_like(base_embeds).scatter_(
+                1,
+                torch.tensor(
+                    [[s for b, s in zip(batch_indices, seq_indices, strict=True) if b == batch_idx]
+                     for batch_idx in range(batch_size)],
+                    device=base_embeds.device
+                ).unsqueeze(-1).expand(-1, -1, base_embeds.size(-1)),
+                mem_embeds_flat.view(batch_size, -1, mem_embeds_flat.size(-1))
+            ),
+            base_embeds
+        )
 
         return inputs_embeds
 

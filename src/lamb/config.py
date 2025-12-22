@@ -122,11 +122,15 @@ class ClaraConfig:
     # TensorBoard
     tensorboard: bool = field(default_factory=lambda: env_flag("LAMB_TENSORBOARD"))
     tensorboard_logdir: str = "logs/tensorboard"
+    # Logging cadence in optimizer update steps (i.e., parameter updates).
     tensorboard_every_steps: int = 5
 
     # Debug Mode
     debug_mode: bool = False  # Enable debug features
-    debug_every_steps: int = 10  # Generate and print colored output every N steps
+    # Debug cadence in optimizer update steps (i.e., parameter updates). If
+    # gradient_accumulation_steps > 1, debug output appears every
+    # debug_every_steps * gradient_accumulation_steps dataloader batches.
+    debug_every_steps: int = 10
     debug_num_samples: int = 3  # Number of samples to generate in debug
     debug_repeat_dataset: int = 0  # Repeat dataset N times (0 = no repeat)
 

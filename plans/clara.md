@@ -410,7 +410,7 @@ def main():
      --max_steps 0  # Just export data
    ```
 
-2. **Train Stage 1 for 100 steps:**
+2. **Train Stage 1 for 100 optimizer steps:**
    ```bash
    uv run lamb \
      --stage stage1 \
@@ -425,8 +425,8 @@ def main():
      --use_paraphrase_loss \
      --batch_size 2 \
      --learning_rate 1e-4 \
-     --max_steps 100 \
-     --save_steps 50 \
+    --max_steps 100 \
+    --save_steps 50 \
      --checkpoint_dir checkpoints/stage1_debug
    ```
 

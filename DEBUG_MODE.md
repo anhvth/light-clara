@@ -11,7 +11,9 @@ Repeats the small dataset N times to allow the model to overfit and show learnin
 ```
 
 ### 2. **Color-Coded Token Output** (`--debug_every_steps N`)
-Every N steps, shows the gold answer tokens colored by the model's probability:
+Every N **optimizer steps** (parameter updates), shows the gold answer tokens colored by the model's probability.
+
+Note: if `--gradient_accumulation_steps > 1`, one optimizer step happens after multiple dataloader batches, so debug output will appear every `N * gradient_accumulation_steps` dataloader batches.
 - **RED** = Low confidence (P ~ 0.0)
 - **GREEN** = High confidence (P ~ 1.0)
 - **YELLOW/ORANGE** = Medium confidence (P ~ 0.5)
@@ -60,7 +62,7 @@ uv run lamb \
 ## How It Works
 
 1. **Repeats dataset**: If you have 8 samples and `--debug_repeat_dataset 10`, you get 88 total samples
-2. **Every 10 steps**: Shows color-coded output for first 2 samples in current batch
+2. **Every 10 optimizer steps**: Shows color-coded output for first 2 samples in the most recent dataloader batch
 3. **Colors show learning**: As training progresses, more tokens turn green (higher confidence)
 4. **Overfit indicator**: When all tokens are green, model has memorized that example
 

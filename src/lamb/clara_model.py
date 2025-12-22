@@ -5,6 +5,7 @@ Implements Apple's CLaRa architecture with memory token compression.
 
 import json
 import os
+import warnings
 from typing import Any, cast
 
 import torch
@@ -144,8 +145,14 @@ class ClaraModel(nn.Module):
 
     def _add_lora_adapters(self) -> None:
         """Add LoRA adapters for encoder and decoder."""
-        if getattr(self.base_model, "peft_config", None) is not None:
-            print("[CLaRa] Existing PEFT config detected; skipping LoRA adapter registration")
+        existing_cfg = getattr(self.base_model, "peft_config", None)
+        existing_adapters: set[str] = set()
+        if isinstance(existing_cfg, dict):
+            existing_adapters = set(existing_cfg.keys())
+
+        want = {"encoder_adapter", "decoder_adapter"}
+        if want.issubset(existing_adapters):
+            print("[CLaRa] Existing LoRA adapters detected; skipping adapter registration")
             return
 
         target_modules = [
@@ -167,7 +174,8 @@ class ClaraModel(nn.Module):
             lora_dropout=self.config.lora_dropout,
             target_modules=target_modules,
         )
-        self.base_model.add_adapter(encoder_config, adapter_name="encoder_adapter")
+        if "encoder_adapter" not in existing_adapters:
+            self.base_model.add_adapter(encoder_config, adapter_name="encoder_adapter")
 
         # Decoder adapter (for generation)
         decoder_config = LoraConfig(
@@ -178,7 +186,16 @@ class ClaraModel(nn.Module):
             lora_dropout=self.config.lora_dropout,
             target_modules=target_modules,
         )
-        self.base_model.add_adapter(decoder_config, adapter_name="decoder_adapter")
+        if "decoder_adapter" not in existing_adapters:
+            # PEFT warns when the model already has a `peft_config` attribute.
+            # In our case, multiple adapters are intentional.
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Already found a `peft_config` attribute in the model\.",
+                    category=UserWarning,
+                )
+                self.base_model.add_adapter(decoder_config, adapter_name="decoder_adapter")
 
         print(
             f"[CLaRa] Added LoRA adapters (encoder r={self.config.encoder_lora_rank}, decoder r={self.config.decoder_lora_rank})"

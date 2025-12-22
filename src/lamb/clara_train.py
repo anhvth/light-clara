@@ -355,4 +355,4 @@ def train_stage1(
     if writer:
         writer.close()
 
-    print(f"\n[Train Stage 1] Completed {global_step} steps")
+    print(f"\n[Train Stage 1] Completed {global_step} optimizer step(s)")

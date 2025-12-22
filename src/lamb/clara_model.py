@@ -14,7 +14,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from lamb.bridge import DocumentCompressor
 from lamb.config import ClaraConfig
-from lamb.debug import print_decode
 from lamb.utils import pick_attn_implementation, pick_dtype
 
 
@@ -87,6 +86,7 @@ class ClaraModel(nn.Module):
             num_memory_tokens=config.compress_rate,
             use_mlp=config.use_compressor_mlp,
             mlp_hidden_dim=config.compressor_mlp_hidden_dim,
+            encoder_pool_method=config.encoder_pool_method,
         ).to(device=device, dtype=dtype)
 
         print(f"[CLaRa] Model initialized. Stage: {config.stage}")
@@ -196,7 +196,10 @@ class ClaraModel(nn.Module):
         encoder_hidden_states = encoder_outputs.hidden_states[-1]
 
         # Compress to memory embeddings
-        memory_embeddings = self.compressor(encoder_hidden_states)
+        memory_embeddings = self.compressor(
+            encoder_hidden_states,
+            attention_mask=doc_attention_mask,
+        )
 
         return memory_embeddings, encoder_hidden_states
 
@@ -260,18 +263,20 @@ class ClaraModel(nn.Module):
         inputs_embeds = embed_layer(input_ids)  # [batch, seq_len, hidden_size]
         # Find positions of memory tokens and replace
         mem_token_ids_set = set(self.mem_token_ids.tolist())
-        is_valid = False
+        replaced = 0
         for b in range(batch_size):
             mem_idx = 0
             for s in range(seq_len):
                 token_id = input_ids[b, s].item()
                 if token_id in mem_token_ids_set and mem_idx < memory_embeddings.size(1):
-                    print(f"[CLaRa] Replacing mem token id {token_id} at batch {b}, seq {s}")
-                    is_valid = True
+                    replaced += 1
                     inputs_embeds[b, s] = memory_embeddings[b, mem_idx]
                     mem_idx += 1
-        print_decode(self.tokenizer, input_ids)
-        assert is_valid, "No memory tokens found in input_ids for replacement."
+        # print_decode(self.tokenizer, input_ids)
+        assert replaced == memory_embeddings.size(1) * batch_size, (
+            f"Replaced {replaced} memory tokens, expected {memory_embeddings.size(1) * batch_size}"
+        )
+
         return inputs_embeds
 
     def get_trainable_params(self) -> list[nn.Parameter]:

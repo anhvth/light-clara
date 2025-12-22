@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass, field
+from typing import Literal
 
 import torch
 
@@ -54,6 +55,7 @@ class ClaraConfig:
     doc_max_length: int = 256  # Max tokens per document
     use_compressor_mlp: bool = True  # Use MLP vs linear projection
     compressor_mlp_hidden_dim: int | None = None  # Default: hidden_size * 4
+    encoder_pool_method: Literal["mean", "mpl", "nearn", "max"] = "mpl"
 
     # LoRA configuration
     encoder_lora_rank: int = 16

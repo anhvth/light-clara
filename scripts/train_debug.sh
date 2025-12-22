@@ -10,7 +10,7 @@ uv run lamb \
   --learning_rate 0.0001 \
   --mse_weight 0.1 \
   --checkpoint_dir checkpoints/debug_demo \
-  --generation_top_k 1 \
+  --generation_top_k 20 \
   --doc_max_length 128 \
   --debug_mode False \
   --debug_every_steps 1 \

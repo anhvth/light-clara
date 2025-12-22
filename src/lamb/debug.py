@@ -1,4 +1,5 @@
 import contextlib
+import re
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -41,6 +42,53 @@ def _score_to_rgb(score: float) -> tuple[int, int, int]:
     g = round(255 * score)
     b = 0
     return r, g, b
+
+
+def _preview_text(s: str, *, max_chars: int = 600) -> str:
+    s = str(s)
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars] + f"…(+{len(s) - max_chars} chars)"
+
+
+def _compact_mem_tokens_in_prompt(prompt_text: str) -> str:
+    """Compact `<mem_0><mem_1>...` runs to `<mem_...>*N` for debug printing."""
+
+    def repl(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        count = len(re.findall(r"<mem_\d+>", inner))
+        return f"<background>\n<mem_...>*{count}\n</background>"
+
+    # Only operate on the <background> ... </background> block to avoid accidental
+    # changes elsewhere.
+    return re.sub(
+        r"<background>\n(.*?)\n</background>",
+        repl,
+        prompt_text,
+        flags=re.DOTALL,
+    )
+
+
+def _normalize_for_contains(s: str) -> str:
+    s = str(s).lower().strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _answer_in_docs(answer: str, docs: list[str]) -> tuple[bool, int | None]:
+    """Best-effort check whether the literal answer appears in any doc.
+
+    This is intentionally conservative for very short answers (e.g. "yes").
+    """
+
+    ans = _normalize_for_contains(answer)
+    if not ans or len(ans) < 4:
+        return False, None
+
+    for i, d in enumerate(docs):
+        if ans in _normalize_for_contains(d):
+            return True, i
+    return False, None
 
 
 @torch.no_grad()
@@ -231,6 +279,8 @@ def debug_reproduce_training(
     if verbose:
         print("======================================================\n")
 
+    return bool(success)
+
 
 @torch.no_grad()
 def debug_reproduce_clara(
@@ -249,8 +299,16 @@ def debug_reproduce_clara(
     tokenizer = model.tokenizer
 
     # Get one sample from batch
-    doc_input_ids = batch["doc_input_ids"][sample_idx : sample_idx + 1].to(config.device)
-    doc_attention_mask = batch["doc_attention_mask"][sample_idx : sample_idx + 1].to(config.device)
+    num_docs_per_sample = batch.get("num_docs_per_sample")
+    if not isinstance(num_docs_per_sample, list) or not num_docs_per_sample:
+        num_docs_per_sample = [1] * int(batch["dec_input_ids"].size(0))
+
+    doc_offset = sum(int(n) for n in num_docs_per_sample[:sample_idx])
+    num_docs = int(num_docs_per_sample[sample_idx])
+    doc_input_ids = batch["doc_input_ids"][doc_offset : doc_offset + num_docs].to(config.device)
+    doc_attention_mask = batch["doc_attention_mask"][doc_offset : doc_offset + num_docs].to(
+        config.device
+    )
     dec_input_ids = batch["dec_input_ids"][sample_idx : sample_idx + 1].to(config.device)
     labels = batch["labels"][sample_idx : sample_idx + 1].to(config.device)
 
@@ -300,6 +358,37 @@ def debug_reproduce_clara(
     print("\n" + "=" * 80)
     print(f"[Debug] Sample {batch['indices'][sample_idx]}")
     print("=" * 80)
+
+    questions = batch.get("questions")
+    if isinstance(questions, list) and sample_idx < len(questions):
+        q = str(questions[sample_idx]).strip()
+        if q:
+            print(f"[Debug] Question (gold): {_preview_text(q, max_chars=400)}")
+
+    answers = batch.get("answers")
+    gold_answer = ""
+    if isinstance(answers, list) and sample_idx < len(answers):
+        gold_answer = str(answers[sample_idx]).strip()
+        if gold_answer:
+            print(f"[Debug] Answer (gold): {_preview_text(gold_answer, max_chars=300)}")
+
+    docs_per_sample = batch.get("docs_per_sample")
+    if isinstance(docs_per_sample, list) and sample_idx < len(docs_per_sample):
+        docs = docs_per_sample[sample_idx]
+        if isinstance(docs, list) and docs:
+            print("[Debug] Background (raw docs):")
+            for i, d in enumerate(docs):
+                d_str = _preview_text(str(d).strip())
+                print(f"  [Doc {i}] {d_str}")
+            print("")
+
+            if gold_answer:
+                found, doc_idx = _answer_in_docs(gold_answer, [str(x) for x in docs])
+                if found:
+                    print(f"[Debug] Answer literal found in docs: True (doc={doc_idx})\n")
+                else:
+                    print("[Debug] Answer literal found in docs: False\n")
+
     print(f"[Debug] Answer token accuracy: {acc * 100:.2f}% ({sum(matches)}/{len(matches)})")
     print(f"[Debug] Answer CE loss: {ce_loss:.6f}")
 
@@ -312,6 +401,7 @@ def debug_reproduce_clara(
         # Prompt (uncolored)
         prompt_ids = gold_ids_list[:answer_start_idx]
         prompt_text = _decode_to_str(tokenizer, prompt_ids)
+        prompt_text = _compact_mem_tokens_in_prompt(prompt_text)
 
         # Answer tokens (colored by model probability)
         answer_ids = gold_ids_list[answer_start_idx:]

@@ -31,13 +31,16 @@ def build_memory_token_string(num_docs: int, num_mem_tokens_per_doc: int = 32) -
         num_mem_tokens_per_doc: Memory tokens per document (default: 32)
 
     Returns:
-        String like "<mem_0><mem_1>...<mem_31><mem_32>...<mem_63>" for 2 docs
+        String like "<mem_0>...<mem_31><mem_0>...<mem_31>" for 2 docs.
+
+        Important: We intentionally *reuse* the same `<mem_i>` tokens for each
+        document. The decoder sees repeated placeholders, and we replace them in
+        left-to-right order with the flattened `memory_embeddings`.
     """
     tokens = []
-    for doc_idx in range(num_docs):
+    for _doc_idx in range(num_docs):
         for mem_idx in range(num_mem_tokens_per_doc):
-            global_idx = doc_idx * num_mem_tokens_per_doc + mem_idx
-            tokens.append(f"<mem_{global_idx}>")
+            tokens.append(f"<mem_{mem_idx}>")
     return "".join(tokens)
 
 
@@ -141,6 +144,9 @@ def stage1_collate_fn(
     # Collect all documents across batch
     all_docs = []
     num_docs_per_sample = []
+    docs_per_sample: list[list[str]] = []
+    questions: list[str] = []
+    answers: list[str] = []
 
     for item in batch:
         docs = item.get("docs", [])[:generation_top_k]
@@ -148,6 +154,9 @@ def stage1_collate_fn(
             docs = [""]  # Empty doc placeholder
         all_docs.extend(docs)
         num_docs_per_sample.append(len(docs))
+        docs_per_sample.append(list(docs))
+        questions.append(str(item.get("question", "")))
+        answers.append(str(item.get("answer", "")))
 
     # Encode documents
     doc_encodings = tokenizer(
@@ -216,6 +225,9 @@ def stage1_collate_fn(
         "labels": labels,
         "data_types": data_types,
         "num_docs_per_sample": num_docs_per_sample,
+        "docs_per_sample": docs_per_sample,
+        "questions": questions,
+        "answers": answers,
         "indices": indices,
     }
 

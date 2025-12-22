@@ -180,7 +180,11 @@ def train_stage1(
         # MSE loss between compressed and encoder representations
         if config.use_mse_loss:
             mse_loss = (
-                model.compressor.compute_mse_loss(encoder_hidden_states, memory_embeddings)
+                model.compressor.compute_mse_loss(
+                    encoder_hidden_states,
+                    memory_embeddings,
+                    attention_mask=doc_attention_mask,
+                )
                 * config.mse_weight
             )
 

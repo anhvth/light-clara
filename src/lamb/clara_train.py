@@ -16,7 +16,6 @@ try:
     import torch._dynamo as torch_dynamo
 except Exception:  # pragma: no cover
     torch_dynamo = None
-
 # Import for original CLaRa MSE loss computation
 from lamb.bridge import compute_mse_loss_original
 from lamb.clara_collate import make_stage1_collate_fn
@@ -38,6 +37,37 @@ try:
     import wandb
 except ImportError:
     wandb = None  # type: ignore
+
+
+def _disable_dynamo_ctx() -> contextlib.AbstractContextManager[None]:
+    """Best-effort torch.compile/torch._dynamo disable context.
+
+    Some stacks (notably Unsloth + fused losses) may patch/alias dynamo APIs.
+    We only return a context manager when the callable actually supports it.
+    """
+
+    candidates: list[object] = []
+
+    compiler = getattr(torch, "compiler", None)
+    if compiler is not None:
+        disable = getattr(compiler, "disable", None)
+        if disable is not None:
+            candidates.append(disable)
+
+    if torch_dynamo is not None:
+        candidates.append(getattr(torch_dynamo, "disable", None))
+
+    for disable_fn in candidates:
+        if disable_fn is None:
+            continue
+        try:
+            ctx = disable_fn()
+        except Exception:
+            continue
+        if hasattr(ctx, "__enter__") and hasattr(ctx, "__exit__"):
+            return ctx
+
+    return contextlib.nullcontext()
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -319,11 +349,11 @@ def train_stage1(
         # With anomaly detection enabled, TorchDynamo can crash on FakeTensor guard formatting
         # (AttributeError: 'NoneType' object has no attribute 'filename'), masking the real error.
         # In debug/anomaly mode, we prefer eager execution for correctness and better tracebacks.
-        dynamo_ctx: contextlib.AbstractContextManager[None]
-        if (disable_dynamo or detect_anomaly) and torch_dynamo is not None:
-            dynamo_ctx = torch_dynamo.disable()
-        else:
-            dynamo_ctx = contextlib.nullcontext()
+        dynamo_ctx = (
+            _disable_dynamo_ctx()
+            if (disable_dynamo or detect_anomaly)
+            else contextlib.nullcontext()
+        )
 
         with autograd_ctx, dynamo_ctx:
             # Compress documents

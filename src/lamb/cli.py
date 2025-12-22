@@ -5,14 +5,16 @@ Supports multi-stage training:
 - Stage 1.2: Compression instruction tuning
 - Stage 2: End-to-end retrieval training (future)
 """
+
 # pyright: reportMissingTypeStubs=false
-import unsloth # noqa: F401
 # unsloth must be imported before torch to enable QLoRA support
 import argparse
 import platform
 from collections.abc import Sequence
 from dataclasses import MISSING, Field, fields
 from typing import Any
+
+import unsloth  # noqa: F401
 
 try:
     from tabulate import tabulate

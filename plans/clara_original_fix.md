@@ -106,20 +106,29 @@ def test_mse_loss_original():
 
 ✅ **Phase 1 Complete**: Separator tokens implemented and tested
 ✅ **Phase 2 Complete**: All validation tests passing
+✅ **Phase 3 Complete**: Multi-QA format implemented and tested
 🎯 **Ready for Training**: Run `./scripts/train_debug.sh` to verify end-to-end
 
 ## Implementation Complete ✅
 
-The `--use_clara_original True` mode is now authentic and ready for use:
+The `--use_clara_original True` mode is now **fully authentic** and ready for use:
 
 - ✅ Separator tokens (`<SEP>`) between documents
+- ✅ **Multiple QA pairs per sample** (questions/answers as lists)
 - ✅ Original chat-template prompt format
-- ✅ Question in user turn (masked), answer in assistant turn (trained)
+- ✅ System prompt: "generate some single **questions**" (plural)
+- ✅ All QA pairs in assistant turn (not discarded)
 - ✅ Fixed document count per sample
 - ✅ All unit tests passing
 - ✅ All integration tests passing
 - ✅ Model initialization working
 - ✅ Code quality checks passing
+
+**Key Improvements:**
+1. Data layer preserves `List[str]` for questions/answers
+2. Collate functions handle both single and multi-QA formats
+3. Prompt builders format multiple "Question: X\nAnswer: Y" pairs
+4. Backward compatible with single QA format
 
 **Validation Results:**
 ```bash

@@ -5,7 +5,7 @@ from typing import Literal
 
 import torch
 
-from lamb.utils import env_flag, pick_attn_implementation, pick_device, pick_dtype
+from lamb.utils import pick_attn_implementation, pick_device, pick_dtype
 
 
 def _env_int(name: str) -> int | None:
@@ -110,7 +110,7 @@ class ClaraConfig:
         if not self.attn_implementation:
             self.attn_implementation = pick_attn_implementation(self.device)
 
-        # Normalize logging backend. Empty means "auto" based on legacy tensorboard flag.
+        # Normalize logging backend.
         report_to = (self.report_to or "").strip().lower()
         valid_report_to = {"tensorboard", "wandb", "none", ""}
         if report_to not in valid_report_to:
@@ -119,13 +119,7 @@ class ClaraConfig:
             )
 
         if not report_to:
-            report_to = "tensorboard" if self.tensorboard else "none"
-
-        # Keep legacy tensorboard flag in sync with report_to.
-        if report_to == "tensorboard":
-            self.tensorboard = True
-        else:
-            self.tensorboard = False
+            report_to = "none"
 
         self.report_to = report_to
 
@@ -141,15 +135,13 @@ class ClaraConfig:
     eval_steps: int = 100
     do_eval: bool = False
     verbose: bool = False
-    # Logging backend (huggingface-style). Empty -> derive from tensorboard flag/env.
+    # Logging backend (huggingface-style).
     report_to: str = ""
     run_name: str = ""
-
-    # TensorBoard
-    tensorboard: bool = field(default_factory=lambda: env_flag("LAMB_TENSORBOARD"))
-    tensorboard_logdir: str = "logs/tensorboard"
+    log_dir: str = "logs/runs"
     # Logging cadence in optimizer update steps (i.e., parameter updates).
-    tensorboard_every_steps: int = 5
+    log_every_steps: int = 5
+    log_text_every_steps: int = 0
 
     # Weights & Biases
     wandb_project: str = "clara"

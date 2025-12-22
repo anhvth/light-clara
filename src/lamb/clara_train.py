@@ -163,7 +163,7 @@ def train_stage1(
 
     writer: SummaryWriter | None = None
     wandb_run: Any | None = None
-    log_every = int(getattr(config, "tensorboard_every_steps", 0) or 0)
+    log_every = int(getattr(config, "log_every_steps", 0) or 0)
 
     if report_to == "tensorboard":
         if SummaryWriter is None:
@@ -171,7 +171,7 @@ def train_stage1(
                 "[TensorBoard] Logging requested but SummaryWriter unavailable. Install with: uv add tensorboard"
             )
         else:
-            run_dir = os.path.join(config.tensorboard_logdir, run_name)
+            run_dir = os.path.join(getattr(config, "log_dir", "logs/runs"), run_name)
             os.makedirs(run_dir, exist_ok=True)
             writer = SummaryWriter(log_dir=run_dir)
             print(f"[TensorBoard] Logging to {run_dir}")

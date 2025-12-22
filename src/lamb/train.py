@@ -45,9 +45,9 @@ def train(
 
     tb_enabled = report_to == "tensorboard"
     wb_enabled = report_to == "wandb"
-    tb_logdir = str(getattr(config, "tensorboard_logdir", "logs/tensorboard"))
-    tb_every_steps = int(getattr(config, "tensorboard_every_steps", 0) or 0)
-    tb_text_every_steps = int(getattr(config, "tensorboard_text_every_steps", 0) or 0)
+    log_dir = str(getattr(config, "log_dir", "logs/runs"))
+    log_every_steps = int(getattr(config, "log_every_steps", 0) or 0)
+    log_text_every_steps = int(getattr(config, "log_text_every_steps", 0) or 0)
 
     if tb_enabled:
         if SummaryWriter is None:
@@ -55,7 +55,7 @@ def train(
                 "[TB] TensorBoard logging requested but unavailable. Install with: uv add tensorboard. "
             )
         else:
-            run_dir = os.path.join(tb_logdir, run_name)
+            run_dir = os.path.join(log_dir, run_name)
             os.makedirs(run_dir, exist_ok=True)
             writer = SummaryWriter(log_dir=run_dir)
             print(f"[TB] Logging to {run_dir}")
@@ -289,8 +289,8 @@ def train(
 
         if (
             (writer is not None or wandb_run is not None)
-            and tb_every_steps
-            and (step % tb_every_steps == 0)
+            and log_every_steps
+            and (step % log_every_steps == 0)
         ):
             try:
                 lr = float(optimizer.param_groups[0].get("lr", 0.0))
@@ -313,7 +313,11 @@ def train(
 
             log_scalars(metrics, step)
 
-            if tb_text_every_steps and (step % tb_text_every_steps == 0) and debug_txt is not None:
+            if (
+                log_text_every_steps
+                and (step % log_text_every_steps == 0)
+                and debug_txt is not None
+            ):
                 log_text("samples/raw", debug_txt[:2000], step)
 
         if step % 5 == 0 and config.device == "cuda" and torch.cuda.is_available():

@@ -9,6 +9,15 @@ import warnings
 from typing import Any, cast
 
 import torch
+
+# Unsloth must be imported before transformers/peft for optimizations
+try:
+    from unsloth import FastLanguageModel
+
+    UNSLOTH_AVAILABLE = True
+except ImportError:
+    UNSLOTH_AVAILABLE = False
+
 from peft import LoraConfig, TaskType
 from torch import nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -16,14 +25,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from lamb.bridge import DocumentCompressor
 from lamb.config import ClaraConfig
 from lamb.utils import pick_attn_implementation, pick_dtype
-
-# Unsloth for QLoRA (optional)
-try:
-    from unsloth import FastLanguageModel
-
-    UNSLOTH_AVAILABLE = True
-except ImportError:
-    UNSLOTH_AVAILABLE = False
 
 
 class ClaraModel(nn.Module):

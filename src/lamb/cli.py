@@ -12,6 +12,11 @@ import platform
 from dataclasses import MISSING, fields
 from typing import Any
 
+try:
+    from tabulate import tabulate
+except ImportError:
+    tabulate = None
+
 from lamb.clara_data import export_debug_jsonl, iter_clara_examples
 from lamb.clara_model import ClaraModel
 from lamb.clara_train import train_stage1
@@ -90,6 +95,16 @@ def prepare_dataset(config: ClaraConfig) -> list[dict[str, Any]]:
     return dataset
 
 
+def _print_config(config_fields: list, config: ClaraConfig) -> None:
+    if tabulate is None:
+        print("[CLaRa] Install tabulate (uv add tabulate) to see the config table.")
+        return
+
+    rows = [(cfg_field.name, getattr(config, cfg_field.name)) for cfg_field in config_fields]
+    print("\n[CLaRa Config]")
+    print(tabulate(rows, headers=["Parameter", "Value"], tablefmt="github"))
+
+
 def _main(config: ClaraConfig) -> None:
     print(f"[CLaRa] Running on {platform.node()}")
     print(
@@ -136,6 +151,8 @@ def main() -> None:
     for cfg_field in config_fields:
         if hasattr(args, cfg_field.name):
             setattr(config, cfg_field.name, getattr(args, cfg_field.name))
+
+    _print_config(config_fields, config)
 
     _main(config)
 

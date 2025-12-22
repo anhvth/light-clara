@@ -370,6 +370,14 @@ def train_stage1(
                     )
                 )
 
+            # Additional debugging: check inputs to forward_with_memory
+            if nan_guard and batch_idx <= 2:
+                print(f"[NaNGuard] Forward inputs batch={batch_idx}:")
+                print(f"  dec_input_ids: shape={dec_input_ids.shape} finite={torch.isfinite(dec_input_ids.float()).all()}")
+                print(f"  dec_attention_mask: shape={dec_attention_mask.shape} finite={torch.isfinite(dec_attention_mask.float()).all()}")
+                print(f"  labels: shape={labels.shape} finite={torch.isfinite(labels.float()).all()}")
+                print(f"  batch_memory_embeddings_tensor: shape={batch_memory_embeddings_tensor.shape} finite={torch.isfinite(batch_memory_embeddings_tensor).all()}")
+
             # Forward through decoder
             outputs = model.forward_with_memory(
                 input_ids=dec_input_ids,
@@ -377,6 +385,18 @@ def train_stage1(
                 memory_embeddings=batch_memory_embeddings_tensor,
                 labels=labels,
             )
+
+            # Debug the outputs immediately
+            if nan_guard and batch_idx <= 2:
+                decoder_loss = cast(torch.Tensor, outputs["loss"])
+                print(f"[NaNGuard] Forward outputs batch={batch_idx}:")
+                print(f"  decoder_loss: {decoder_loss.item()} finite={torch.isfinite(decoder_loss).all()}")
+                if "logits" in outputs:
+                    logits = outputs["logits"]
+                    print(f"  logits: shape={logits.shape} finite={torch.isfinite(logits).all()} min={logits.min().item():.3f} max={logits.max().item():.3f}")
+                    # Check if any logits are extremely large (which can cause NaN in softmax/CE)
+                    if logits.abs().max() > 100:
+                        print(f"  WARNING: Very large logits detected! max_abs={logits.abs().max().item():.3f}")
 
             decoder_loss = cast(torch.Tensor, outputs["loss"])
 

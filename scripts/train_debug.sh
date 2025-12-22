@@ -42,7 +42,7 @@ python -m lamb.cli \
   --stage stage1 \
   --dataset_limit 100000 \
   --dataset_split test \
-  --model_name unsloth/Qwen3-14B-bnb-4bit \
+  --model_name Qwen/Qwen3-0.6B \
   --compress_rate 8 \
   --batch_size 1 \
   --max_steps 1000 \
@@ -58,4 +58,3 @@ python -m lamb.cli \
   --debug_repeat_dataset 0 \
   --report_to tensorboard \
   --use_clara_original True \
-  --qlora True

@@ -12,10 +12,9 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-try:
-    import torch._dynamo as torch_dynamo
-except Exception:  # pragma: no cover
-    torch_dynamo = None
+# Note: We intentionally do NOT use torch._dynamo / torch.compile context managers here.
+# Unsloth may patch Dynamo APIs, and using them as context managers can crash
+# ("torch._dynamo.optimize(...) is used with a context manager").
 # Import for original CLaRa MSE loss computation
 from lamb.bridge import compute_mse_loss_original
 from lamb.clara_collate import make_stage1_collate_fn
@@ -37,47 +36,6 @@ try:
     import wandb
 except ImportError:
     wandb = None  # type: ignore
-
-
-def _disable_dynamo_ctx() -> contextlib.AbstractContextManager[None]:
-    """Best-effort torch.compile/torch._dynamo disable context.
-
-    Some stacks (notably Unsloth + fused losses) may patch/alias dynamo APIs.
-    We only return a context manager when the callable actually supports it.
-    """
-
-    # Prefer global disable switches to avoid patched context-managers becoming
-    # torch._dynamo.optimize(...) (which errors if used as a context manager).
-    os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
-    os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
-
-    if torch_dynamo is not None:
-        # Best-effort global disable (no context manager).
-        with contextlib.suppress(Exception):
-            torch_dynamo.config.disable = True  # type: ignore[attr-defined]
-
-    # If we can obtain a *real* DisableContext, use it; otherwise no-op.
-    candidates: list[object] = []
-    compiler = getattr(torch, "compiler", None)
-    if compiler is not None:
-        candidates.append(getattr(compiler, "disable", None))
-    if torch_dynamo is not None:
-        candidates.append(getattr(torch_dynamo, "disable", None))
-
-    for disable_fn in candidates:
-        if disable_fn is None:
-            continue
-        try:
-            ctx = disable_fn()
-        except Exception:
-            continue
-        cls_name = ctx.__class__.__name__.lower()
-        if "optimize" in cls_name:
-            continue
-        if hasattr(ctx, "__enter__") and hasattr(ctx, "__exit__"):
-            return ctx
-
-    return contextlib.nullcontext()
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -311,6 +269,11 @@ def train_stage1(
         "y",
         "on",
     }
+    # Optional: request eager mode by disabling torch.compile/torchdynamo via env vars.
+    # We do this without using any Dynamo context managers (they can be patched by Unsloth).
+    if disable_dynamo:
+        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+        os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
     nan_guard_every = int(os.environ.get("LAMB_NAN_GUARD_EVERY", "1") or "1")
     skipped_non_finite = 0
 
@@ -355,17 +318,7 @@ def train_stage1(
             torch.autograd.set_detect_anomaly(True) if detect_anomaly else contextlib.nullcontext()
         )
 
-        # Unsloth's fused CE loss uses torch.compile / torch.func transforms internally.
-        # With anomaly detection enabled, TorchDynamo can crash on FakeTensor guard formatting
-        # (AttributeError: 'NoneType' object has no attribute 'filename'), masking the real error.
-        # In debug/anomaly mode, we prefer eager execution for correctness and better tracebacks.
-        dynamo_ctx = (
-            _disable_dynamo_ctx()
-            if (disable_dynamo or detect_anomaly)
-            else contextlib.nullcontext()
-        )
-
-        with autograd_ctx, dynamo_ctx:
+        with autograd_ctx:
             # Compress documents
             memory_embeddings, encoder_hidden_states = model.compress_documents(
                 doc_input_ids, doc_attention_mask

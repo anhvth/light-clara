@@ -411,13 +411,25 @@ def train_stage1(
                 labels=labels,
             )
 
-            # Debug the outputs immediately
+            # Debug the outputs and check gradient connectivity
             if nan_guard and batch_idx <= 2:
                 decoder_loss = cast(torch.Tensor, outputs["loss"])
-                print(f"[NaNGuard] Forward outputs batch={batch_idx}:")
-                print(
-                    f"  decoder_loss: {decoder_loss.item()} finite={torch.isfinite(decoder_loss).all()}"
-                )
+                print(f"[NaNGuard] Post-forward batch={batch_idx}:")
+                print(f"  loss: {decoder_loss.item():.4f} finite={torch.isfinite(decoder_loss).item()} requires_grad={decoder_loss.requires_grad}")
+                
+                # Check gradient connectivity
+                if batch_idx == 0:
+                    # Verify loss has gradient function
+                    if decoder_loss.grad_fn is not None:
+                        print(f"  loss.grad_fn: {type(decoder_loss.grad_fn).__name__}")
+                    else:
+                        print(f"  WARNING: loss.grad_fn is None - no gradient graph!")
+                    
+                    # Check if memory embeddings are in computational graph
+                    if batch_memory_embeddings_tensor.grad_fn is not None:
+                        print(f"  memory_embeddings in graph: YES (grad_fn={type(batch_memory_embeddings_tensor.grad_fn).__name__})")
+                    else:
+                        print(f"  WARNING: memory_embeddings NOT in graph (detached or no grad_fn)")
 
             decoder_loss = cast(torch.Tensor, outputs["loss"])
 
@@ -531,46 +543,41 @@ def train_stage1(
             # Check gradients for NaN/Inf before stepping
             grad_ok = True
             nan_grad_params: list[str] = []
+            lora_nan_count = 0
+            embed_nan_count = 0
+            
             if nan_guard:
-                # Check embedding layer specifically first
-                embed_layer = model.base_model.get_input_embeddings()
-                if embed_layer.weight.grad is not None:
-                    embed_grad = embed_layer.weight.grad
-                    finite_count = torch.isfinite(embed_grad).sum().item()
-                    total_count = embed_grad.numel()
-                    if finite_count != total_count:
-                        print(f"  [NaNGuard] Embedding grad: finite={finite_count}/{total_count}")
-                        # Check specifically memory token positions
-                        mem_start = len(model.tokenizer) - 9  # 8 mem + 1 sep
-                        mem_grad = embed_grad[mem_start:]
-                        mem_finite = torch.isfinite(mem_grad).sum().item()
-                        print(
-                            f"  [NaNGuard] Memory token grad: finite={mem_finite}/{mem_grad.numel()}"
-                        )
-                        # Check non-memory tokens
-                        non_mem_grad = embed_grad[:mem_start]
-                        non_mem_finite = torch.isfinite(non_mem_grad).sum().item()
-                        print(
-                            f"  [NaNGuard] Non-mem token grad: finite={non_mem_finite}/{non_mem_grad.numel()}"
-                        )
-
+                # Collect gradient statistics
                 for name, p in model.base_model.named_parameters():
                     if p.grad is not None and not torch.isfinite(p.grad).all():
                         grad_ok = False
                         nan_grad_params.append(name)
-                        if len(nan_grad_params) <= 5:  # Only show first 5
+                        
+                        # Categorize the NaN
+                        if 'lora' in name.lower():
+                            lora_nan_count += 1
+                        elif 'embed' in name.lower():
+                            embed_nan_count += 1
+                        
+                        # Show details for first few
+                        if len(nan_grad_params) <= 3:
                             grad_finite = torch.isfinite(p.grad).sum().item()
                             grad_total = p.grad.numel()
-                            print(
-                                f"  [NaNGuard] NaN grad in: {name} finite={grad_finite}/{grad_total}"
-                            )
+                            grad_abs_max = p.grad.abs().max().item() if grad_finite > 0 else float('nan')
+                            print(f"  [NaN] {name}: finite={grad_finite}/{grad_total} abs_max={grad_abs_max:.2e}")
+                
                 if not grad_ok:
                     skipped_non_finite += 1
-                    print(
-                        f"\x1b[91m[NaNGuard] Non-finite gradients at step={global_step} "
-                        f"batch={batch_idx} (skipped={skipped_non_finite})\x1b[0m"
-                    )
-                    print(f"  Total params with NaN grads: {len(nan_grad_params)}")
+                    print(f"\x1b[91m[NaNGuard] NaN gradients step={global_step} batch={batch_idx} (skipped={skipped_non_finite})\x1b[0m")
+                    print(f"  Total NaN params: {len(nan_grad_params)} (LoRA={lora_nan_count}, Embed={embed_nan_count}, Other={len(nan_grad_params)-lora_nan_count-embed_nan_count})")
+                    
+                    # Show a LoRA parameter's actual values if we have NaN
+                    if lora_nan_count > 0 and batch_idx == 0:
+                        for name, p in model.base_model.named_parameters():
+                            if 'lora' in name.lower() and p.grad is not None:
+                                print(f"  LoRA param {name}: weight range=[{p.data.min():.2e}, {p.data.max():.2e}]")
+                                break
+                    
                     optimizer.zero_grad(set_to_none=True)
                     continue
 

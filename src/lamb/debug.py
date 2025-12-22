@@ -165,7 +165,7 @@ def debug_reproduce_training(
     acc = (sum(matches) / len(matches)) if matches else 0.0
 
     lm_loss = functional.cross_entropy(
-        logits.view(-1, logits.size(-1)), torch.tensor(gold_next, device=logits.device)
+        logits.reshape(-1, logits.size(-1)), torch.tensor(gold_next, device=logits.device)
     ).item()
     if verbose:
         log.append("================ TRAINING-REPRO DEBUG ================")
@@ -336,7 +336,7 @@ def debug_reproduce_clara(
 
     # Compress documents
     memory_embeddings, _ = model.compress_documents(doc_input_ids, doc_attention_mask)
-    memory_embeddings_flat = memory_embeddings.view(1, -1, memory_embeddings.size(-1))
+    memory_embeddings_flat = memory_embeddings.reshape(1, -1, memory_embeddings.size(-1))
 
     # Forward through decoder
     outputs = model.forward_with_memory(

@@ -259,7 +259,7 @@ def train_stage1(
         for num_docs in num_docs_per_sample:
             sample_mem = memory_embeddings[doc_offset : doc_offset + num_docs]
             # Flatten: [num_docs, compress_rate, hidden_size] -> [num_docs * compress_rate, hidden_size]
-            sample_mem_flat = sample_mem.view(-1, sample_mem.size(-1))
+            sample_mem_flat = sample_mem.reshape(-1, sample_mem.size(-1))
             batch_memory_embeddings.append(sample_mem_flat)
             doc_offset += num_docs
 
@@ -282,7 +282,7 @@ def train_stage1(
         outputs = model.forward_with_memory(
             input_ids=dec_input_ids,
             attention_mask=dec_attention_mask,
-            memory_embeddings=batch_memory_embeddings_tensor,
+            memory_embeddings=batch_memory_embeddings_tensor,  # will be replace(embeding(input_ids), memory)
             labels=labels,
         )
 

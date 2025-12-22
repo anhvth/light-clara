@@ -12,6 +12,48 @@ def _masked_mean(x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
     return (x * mask_f.unsqueeze(-1)).sum(dim=1) / denom
 
 
+class AttentionCompressor(nn.Module):
+    def __init__(self, dim: int = 1024, num_heads: int = 8, target_len: int = 8):
+        super().__init__()
+        # 1. Create 8 learnable "summary tokens" (Queries)
+        self.summary_queries = nn.Parameter(torch.randn(1, target_len, dim))
+
+        # 2. Attention layer
+        self.attn = nn.MultiheadAttention(embed_dim=dim, num_heads=num_heads, batch_first=True)
+
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+        # x shape: (Batch, 128, 1024)
+        batch_size = x.shape[0]
+
+        # Expand queries to match batch size: (Batch, 8, 1024)
+        queries = self.summary_queries.repeat(batch_size, 1, 1)
+
+        key_padding_mask = None
+        if attention_mask is not None:
+            # MultiheadAttention expects True where tokens should be ignored.
+            key_padding_mask = attention_mask == 0
+
+        # 3. Cross-Attention:
+        # Query = Summary Tokens (8)
+        # Key/Value = Input Tokens (128)
+        compressed, _ = self.attn(
+            query=queries,
+            key=x,
+            value=x,
+            key_padding_mask=key_padding_mask,
+        )
+
+        return compressed  # Shape: (Batch, 8, 1024)
+
+
+# Usage
+# model = AttentionCompressor()
+# input_tensor = torch.randn(32, 128, 1024)  # Batch of 32
+# output = model(input_tensor)
+
+# print(output.shape)  # torch.Size([32, 8, 1024])
+
+
 class DocumentCompressor(nn.Module):
     """Compresses documents into fixed-size memory token embeddings.
 
@@ -41,22 +83,22 @@ class DocumentCompressor(nn.Module):
                 "using token_softmax routing"
             )
 
-        # Token-wise router: produce per-memory token weights across the sequence.
-        self.router = nn.Linear(hidden_size, num_memory_tokens, bias=False)
-        self.router_activation = nn.GELU()
+        self.attention_compressor = AttentionCompressor(
+            dim=hidden_size, num_heads=8, target_len=num_memory_tokens
+        )
 
-        if use_mlp:
-            mlp_hidden_dim = mlp_hidden_dim or hidden_size * 4
-            self.compress_mlp = nn.Sequential(
-                nn.Linear(hidden_size, mlp_hidden_dim, bias=False),
-                nn.GELU(),
-                nn.Linear(mlp_hidden_dim, hidden_size, bias=False),
-            )
-        else:
-            # Simple linear projection per memory token
-            self.compress_linear = nn.Linear(hidden_size, hidden_size, bias=False)
+        # if use_mlp:
+        #     mlp_hidden_dim = mlp_hidden_dim or hidden_size * 4
+        #     self.compress_mlp = nn.Sequential(
+        #         nn.Linear(hidden_size, mlp_hidden_dim, bias=False),
+        #         nn.GELU(),
+        #         nn.Linear(mlp_hidden_dim, hidden_size, bias=False),
+        #     )
+        # else:
+        #     # Simple linear projection per memory token
+        #     self.compress_linear = nn.Linear(hidden_size, hidden_size, bias=False)
 
-        # Layer norm for compressed representations
+        # # Layer norm for compressed representations
         self.compress_norm = nn.LayerNorm(hidden_size)
 
         # Initialize weights
@@ -81,25 +123,16 @@ class DocumentCompressor(nn.Module):
         Returns:
             memory_embeddings: [batch, num_memory_tokens, hidden_size]
         """
-        # Token-softmax router: map sequence length -> num_memory_tokens without collapsing first
-        # Shape: [batch, seq_len, num_memory_tokens]
-        scores = self.router_activation(self.router(encoder_hidden_states))
-        if attention_mask is not None:
-            scores = scores.masked_fill(attention_mask.unsqueeze(-1) == 0, -1e9)
-        weights = torch.softmax(scores.float(), dim=1).to(dtype=encoder_hidden_states.dtype)
+        memory_embeddings = self.attention_compressor(encoder_hidden_states, attention_mask)
+        # import ipdb; ipdb.set_trace()
+        # memory_embeddings = (
+        #     self.compress_mlp(memory_embeddings)
+        #     if self.use_mlp
+        #     else self.compress_linear(memory_embeddings)
+        # )
 
-        # Weighted sum for each memory token: [batch, num_memory_tokens, hidden_size]
-        memory_embeddings = torch.einsum("bsh,bsn->bnh", encoder_hidden_states, weights)
-
-        # Optional per-memory MLP
-        memory_embeddings = (
-            self.compress_mlp(memory_embeddings)
-            if self.use_mlp
-            else self.compress_linear(memory_embeddings)
-        )
-
-        # Normalize
-        memory_embeddings = self.compress_norm(memory_embeddings)
+        # # Normalize
+        # memory_embeddings = self.compress_norm(memory_embeddings)
 
         return memory_embeddings
 

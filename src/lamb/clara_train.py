@@ -255,13 +255,7 @@ def train_stage1(
         "y",
         "on",
     }
-    detach_memory = os.environ.get("LAMB_DETACH_MEMORY", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "y",
-        "on",
-    }
+    detach_memory = False  # NEVER detach - breaks gradient flow!
     # Optional: request eager mode by disabling torch.compile/torchdynamo via env vars.
     # We do this without using any Dynamo context managers (they can be patched by Unsloth).
     if disable_dynamo:

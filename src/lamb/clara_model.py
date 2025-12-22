@@ -170,11 +170,10 @@ class ClaraModel(nn.Module):
             load_in_4bit=True,  # Enable 4-bit quantization
         )
 
-        # Add LoRA with Unsloth (creates encoder_adapter by default)
-        # IMPORTANT: Disable Unsloth's "smart" gradient checkpointing!
-        # Unsloth's gradient offloading is incompatible with our multi-forward-pass
-        # architecture (encoder -> extract memory -> decoder -> backward).
-        # Using True (standard PyTorch checkpointing) or False works.
+        # Add LoRA with Unsloth (creates default adapter)
+        # CRITICAL: Disable gradient checkpointing entirely (False)!
+        # Unsloth's gradient checkpointing/offloading breaks multi-forward-pass
+        # (encoder -> memory -> decoder -> backward) causing ALL LoRA grads to be NaN.
         model = FastLanguageModel.get_peft_model(
             model,
             r=config.encoder_lora_rank,
@@ -182,7 +181,7 @@ class ClaraModel(nn.Module):
             lora_alpha=config.lora_alpha,
             lora_dropout=config.lora_dropout,
             bias="none",
-            use_gradient_checkpointing=True,  # Standard PyTorch, NOT "unsloth"
+            use_gradient_checkpointing=False,  # Disabled to prevent gradient issues
             random_state=42,
         )
 

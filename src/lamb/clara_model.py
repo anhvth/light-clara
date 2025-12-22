@@ -502,37 +502,40 @@ class ClaraModel(nn.Module):
 
         # Get base embeddings for all tokens
         base_embeds = embed_layer(input_ids)  # [batch, seq_len, hidden_size]
-        hidden_size = base_embeds.shape[-1]
 
-        # Find positions of memory tokens
+        # Find positions of memory tokens and build index lists
         mem_token_ids_set = set(self.mem_token_ids.tolist())
 
-        # Build replacement mask and indices
-        mem_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=input_ids.device)
-        mem_replacement = torch.zeros(
-            batch_size, seq_len, hidden_size, dtype=base_embeds.dtype, device=base_embeds.device
-        )
+        batch_indices = []
+        seq_indices = []
+        mem_indices = []
 
-        replaced_count = 0
         for b in range(batch_size):
             mem_idx = 0
             for s in range(seq_len):
                 token_id = input_ids[b, s].item()
                 if token_id in mem_token_ids_set and mem_idx < memory_embeddings.size(1):
-                    mem_mask[b, s] = True
-                    mem_replacement[b, s] = memory_embeddings[b, mem_idx]
+                    batch_indices.append(b)
+                    seq_indices.append(s)
+                    mem_indices.append(mem_idx)
                     mem_idx += 1
-                    replaced_count += 1
-
-        # Use torch.where to create new tensor without in-place operations
-        inputs_embeds = torch.where(
-            mem_mask.unsqueeze(-1).expand_as(base_embeds), mem_replacement, base_embeds
-        )
 
         # Verify replacement count
-        assert replaced_count == memory_embeddings.size(1) * batch_size, (
-            f"Replaced {replaced_count} memory tokens, expected {memory_embeddings.size(1) * batch_size}"
+        assert len(batch_indices) == memory_embeddings.size(1) * batch_size, (
+            f"Found {len(batch_indices)} memory tokens, expected {memory_embeddings.size(1) * batch_size}"
         )
+
+        if not batch_indices:
+            return base_embeds
+
+        # Create replacement tensor using scatter without in-place operations
+        # Start by cloning base embeddings (no longer part of original computation graph)
+        inputs_embeds = base_embeds.detach().clone()
+        inputs_embeds.requires_grad = True
+
+        # Now we can safely do in-place operations on the cloned tensor
+        for b, s, m in zip(batch_indices, seq_indices, mem_indices, strict=True):
+            inputs_embeds[b, s] = memory_embeddings[b, m]
 
         return inputs_embeds
 

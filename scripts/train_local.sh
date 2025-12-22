@@ -2,7 +2,7 @@ python -m lamb.cli \
   --stage stage1 \
   --dataset_limit 100000 \
   --dataset_split test \
-  --model_name Qwen/Qwen3-0.6B \
+  --model_name Qwen/Qwen3-14B \
   --compress_rate 8 \
   --batch_size 1 \
   --max_steps 1000 \

@@ -309,55 +309,62 @@ def train_stage1(
                 doc_input_ids, doc_attention_mask
             )
 
-        if config.use_clara_original:
-            if len(set(num_docs_per_sample)) > 1:
-                raise ValueError("Original CLaRa format expects a fixed number of docs per sample")
-            num_docs = num_docs_per_sample[0] if num_docs_per_sample else 1
-            mem = memory_embeddings.reshape(batch_size, num_docs, -1, memory_embeddings.size(-1))
-            batch_memory_embeddings_tensor = mem.reshape(batch_size, -1, mem.size(-1))
-        else:
-            # Reshape memory embeddings to [batch, num_docs * compress_rate, hidden_size]
-            # Currently: [batch * total_docs, compress_rate, hidden_size]
-            # Need to split by num_docs_per_sample
-            batch_memory_embeddings = []
-            doc_offset = 0
-            for num_docs in num_docs_per_sample:
-                sample_mem = memory_embeddings[doc_offset : doc_offset + num_docs]
-                # Flatten: [num_docs, compress_rate, hidden_size] -> [num_docs * compress_rate, hidden_size]
-                sample_mem_flat = sample_mem.reshape(-1, sample_mem.size(-1))
-                batch_memory_embeddings.append(sample_mem_flat)
-                doc_offset += num_docs
-
-            # Pad to same length
-            max_mem_tokens = max(m.size(0) for m in batch_memory_embeddings)
-            padded_memory_embeddings = []
-            for mem_tensor in batch_memory_embeddings:
-                padded = mem_tensor
-                if padded.size(0) < max_mem_tokens:
-                    pad_size = max_mem_tokens - padded.size(0)
-                    pad = torch.zeros(
-                        pad_size, padded.size(1), dtype=padded.dtype, device=padded.device
+            # Build [batch, num_docs * compress_rate, hidden]
+            if config.use_clara_original:
+                if len(set(num_docs_per_sample)) > 1:
+                    raise ValueError(
+                        "Original CLaRa format expects a fixed number of docs per sample"
                     )
-                    padded = torch.cat([padded, pad], dim=0)
-                padded_memory_embeddings.append(padded)
+                num_docs = num_docs_per_sample[0] if num_docs_per_sample else 1
+                mem = memory_embeddings.reshape(
+                    batch_size, num_docs, -1, memory_embeddings.size(-1)
+                )
+                batch_memory_embeddings_tensor = mem.reshape(batch_size, -1, mem.size(-1))
+            else:
+                # Split/pad variable-doc samples.
+                batch_memory_embeddings = []
+                doc_offset = 0
+                for num_docs in num_docs_per_sample:
+                    sample_mem = memory_embeddings[doc_offset : doc_offset + num_docs]
+                    sample_mem_flat = sample_mem.reshape(-1, sample_mem.size(-1))
+                    batch_memory_embeddings.append(sample_mem_flat)
+                    doc_offset += num_docs
 
-            batch_memory_embeddings_tensor = torch.stack(padded_memory_embeddings)
+                max_mem_tokens = max(m.size(0) for m in batch_memory_embeddings)
+                padded_memory_embeddings = []
+                for mem_tensor in batch_memory_embeddings:
+                    padded = mem_tensor
+                    if padded.size(0) < max_mem_tokens:
+                        pad_size = max_mem_tokens - padded.size(0)
+                        pad = torch.zeros(
+                            pad_size,
+                            padded.size(1),
+                            dtype=padded.dtype,
+                            device=padded.device,
+                        )
+                        padded = torch.cat([padded, pad], dim=0)
+                    padded_memory_embeddings.append(padded)
+
+                batch_memory_embeddings_tensor = torch.stack(padded_memory_embeddings)
 
             if detach_memory:
                 batch_memory_embeddings_tensor = batch_memory_embeddings_tensor.detach()
 
             if nan_guard and (batch_idx % max(1, nan_guard_every) == 0):
-                pieces = [
-                    f"[NaNGuard] step={global_step} batch={batch_idx}",
-                    _tensor_stats("memory_embeddings", memory_embeddings),
-                    _tensor_stats("batch_memory_embeddings_tensor", batch_memory_embeddings_tensor),
-                ]
-                msg = "\n".join(pieces)
-                if "finite=0/" in msg or "finite=" in msg:
-                    # Only print; heavy checks already embedded in stats.
-                    print(msg)
+                print(
+                    "\n".join(
+                        [
+                            f"[NaNGuard] step={global_step} batch={batch_idx}",
+                            _tensor_stats("memory_embeddings", memory_embeddings),
+                            _tensor_stats(
+                                "batch_memory_embeddings_tensor",
+                                batch_memory_embeddings_tensor,
+                            ),
+                        ]
+                    )
+                )
 
-            # Forward through decoder with memory embeddings
+            # Forward through decoder
             outputs = model.forward_with_memory(
                 input_ids=dec_input_ids,
                 attention_mask=dec_attention_mask,
@@ -365,75 +372,71 @@ def train_stage1(
                 labels=labels,
             )
 
-        # Compute per-sample losses
-        qa_loss = torch.tensor(0.0, device=config.device)
-        paraphrase_loss = torch.tensor(0.0, device=config.device)
-        mse_loss = torch.tensor(0.0, device=config.device)
+            decoder_loss = cast(torch.Tensor, outputs["loss"])
 
-        num_qa = sum(1 for dt in data_types if dt != "paraphrase")
-        num_paraphrase = sum(1 for dt in data_types if dt == "paraphrase")
-
-        # Main decoder loss (already computed)
-        decoder_loss = outputs["loss"]
-
-        if config.use_clara_original:
-            qa_loss = decoder_loss * config.qa_weight
+            # Compute per-sample losses
+            qa_loss = torch.tensor(0.0, device=config.device)
             paraphrase_loss = torch.tensor(0.0, device=config.device)
-        # Split into QA and paraphrase
-        elif num_qa > 0 and num_paraphrase > 0:
-            # Mixed batch - approximate split
-            qa_loss = decoder_loss * (num_qa / batch_size) * config.qa_weight
-            paraphrase_loss = (
-                decoder_loss * (num_paraphrase / batch_size) * config.paraphrase_weight
-            )
-        elif num_paraphrase > 0:
-            paraphrase_loss = decoder_loss * config.paraphrase_weight
-        else:
-            qa_loss = decoder_loss * config.qa_weight
+            mse_loss = torch.tensor(0.0, device=config.device)
 
-        # MSE loss between compressed and encoder representations
-        if config.use_mse_loss:
+            num_qa = sum(1 for dt in data_types if dt != "paraphrase")
+            num_paraphrase = sum(1 for dt in data_types if dt == "paraphrase")
+
             if config.use_clara_original:
-                # Original CLaRa MSE: mean(mem_tokens) vs mean(non_mem_tokens)
-                # Need to reconstruct input_ids with memory tokens
-                # encoder_hidden_states has shape [batch*docs, doc_seq_len + num_mem_tokens, hidden_size]
-                # We need the corresponding input_ids
-                num_mem_tokens = config.compress_rate
-                batch_size = doc_input_ids.size(0)
-                mem_token_ids = (
-                    model.mem_token_ids.unsqueeze(0).expand(batch_size, -1).to(doc_input_ids.device)
+                qa_loss = decoder_loss * config.qa_weight
+            elif num_qa > 0 and num_paraphrase > 0:
+                qa_loss = decoder_loss * (num_qa / batch_size) * config.qa_weight
+                paraphrase_loss = (
+                    decoder_loss * (num_paraphrase / batch_size) * config.paraphrase_weight
                 )
-                input_ids_with_mem = torch.cat([doc_input_ids, mem_token_ids], dim=1)
-                attention_mask_with_mem = torch.cat(
-                    [
-                        doc_attention_mask,
-                        torch.ones(batch_size, num_mem_tokens, device=doc_attention_mask.device),
-                    ],
-                    dim=1,
-                )
-
-                mse_loss = (
-                    compute_mse_loss_original(
-                        encoder_hidden_states,
-                        input_ids_with_mem,
-                        model.mem_token_ids,
-                        attention_mask_with_mem,
-                    )
-                    * config.mse_weight
-                )
+            elif num_paraphrase > 0:
+                paraphrase_loss = decoder_loss * config.paraphrase_weight
             else:
-                # Custom MSE: mean-pooled comparison
-                mse_loss = (
-                    model.compressor.compute_mse_loss(
-                        encoder_hidden_states,
-                        memory_embeddings,
-                        attention_mask=doc_attention_mask,
-                    )
-                    * config.mse_weight
-                )
+                qa_loss = decoder_loss * config.qa_weight
 
-            # Total loss
+            if config.use_mse_loss:
+                if config.use_clara_original:
+                    num_mem_tokens = config.compress_rate
+                    enc_batch = doc_input_ids.size(0)
+                    mem_token_ids = (
+                        model.mem_token_ids.unsqueeze(0)
+                        .expand(enc_batch, -1)
+                        .to(doc_input_ids.device)
+                    )
+                    input_ids_with_mem = torch.cat([doc_input_ids, mem_token_ids], dim=1)
+                    attention_mask_with_mem = torch.cat(
+                        [
+                            doc_attention_mask,
+                            torch.ones(
+                                enc_batch,
+                                num_mem_tokens,
+                                device=doc_attention_mask.device,
+                            ),
+                        ],
+                        dim=1,
+                    )
+                    mse_loss = (
+                        compute_mse_loss_original(
+                            encoder_hidden_states,
+                            input_ids_with_mem,
+                            model.mem_token_ids,
+                            attention_mask_with_mem,
+                        )
+                        * config.mse_weight
+                    )
+                else:
+                    mse_loss = (
+                        model.compressor.compute_mse_loss(
+                            encoder_hidden_states,
+                            memory_embeddings,
+                            attention_mask=doc_attention_mask,
+                        )
+                        * config.mse_weight
+                    )
+
             total_loss = qa_loss + paraphrase_loss + mse_loss
+            if config.gradient_accumulation_steps > 1:
+                total_loss = total_loss / config.gradient_accumulation_steps
 
             if nan_guard and not torch.isfinite(total_loss).all().item():
                 skipped_non_finite += 1
@@ -441,7 +444,7 @@ def train_stage1(
                     "\n".join(
                         [
                             f"\x1b[91m[NaNGuard] Non-finite total_loss at step={global_step} batch={batch_idx} (skipped={skipped_non_finite})\x1b[0m",
-                            _tensor_stats("decoder_loss", cast(torch.Tensor, outputs["loss"])),
+                            _tensor_stats("decoder_loss", decoder_loss),
                             _tensor_stats("qa_loss", qa_loss),
                             _tensor_stats("paraphrase_loss", paraphrase_loss),
                             _tensor_stats("mse_loss", mse_loss),
@@ -450,10 +453,6 @@ def train_stage1(
                 )
                 optimizer.zero_grad(set_to_none=True)
                 continue
-
-        # Backward and optimize
-        if config.gradient_accumulation_steps > 1:
-            total_loss = total_loss / config.gradient_accumulation_steps
 
             try:
                 total_loss.backward()
@@ -465,7 +464,7 @@ def train_stage1(
                         "\n".join(
                             [
                                 f"\x1b[91m[NaNGuard] Backward failed (skipped={skipped_non_finite}) at step={global_step} batch={batch_idx}: {msg}\x1b[0m",
-                                _tensor_stats("decoder_loss", cast(torch.Tensor, outputs["loss"])),
+                                _tensor_stats("decoder_loss", decoder_loss),
                                 _tensor_stats("qa_loss", qa_loss),
                                 _tensor_stats("paraphrase_loss", paraphrase_loss),
                                 _tensor_stats("mse_loss", mse_loss),

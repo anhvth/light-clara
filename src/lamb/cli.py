@@ -29,6 +29,19 @@ from lamb.clara_train import train_stage1
 from lamb.config import ClaraConfig
 
 
+def _parse_bool(x: object) -> bool:
+    if isinstance(x, bool):
+        return x
+    if x is None:
+        raise argparse.ArgumentTypeError("Expected a boolean value")
+    s = str(x).strip().lower()
+    if s in {"1", "true", "yes", "y", "on"}:
+        return True
+    if s in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {x!r}")
+
+
 def _maybe_print_env_diagnostics() -> None:
     if os.environ.get("LAMB_ENV_DIAG", "").strip().lower() not in {"1", "true", "yes", "y", "on"}:
         return
@@ -165,8 +178,12 @@ def main() -> None:
             default = cfg_field.default_factory()
 
         if cfg_field.type in (str, int, float, bool):
+            arg_type = _parse_bool if cfg_field.type is bool else cfg_field.type
             parser.add_argument(
-                f"--{name}", type=cfg_field.type, default=default, help=f"Set {name}"
+                f"--{name}",
+                type=arg_type,
+                default=default,
+                help=f"Set {name}",
             )
 
     # Extra dataset args (kept here to avoid overloading the config dataclass).

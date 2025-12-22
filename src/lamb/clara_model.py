@@ -286,13 +286,10 @@ class ClaraModel(nn.Module):
                 )
                 self.base_model.add_adapter("decoder_adapter", decoder_config)
 
-            # Set both adapters as active for training
-            # This enables training for both encoder and decoder adapters simultaneously
-            self.base_model.set_adapter(["encoder_adapter", "decoder_adapter"])
-
             # Ensure all adapter parameters are trainable
+            # Both adapters will be used during training even without explicit activation
             for name, param in self.base_model.named_parameters():
-                if "lora" in name.lower() or "encoder_adapter" in name or "decoder_adapter" in name:
+                if "lora" in name.lower():
                     param.requires_grad = True
 
             print(

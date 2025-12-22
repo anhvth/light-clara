@@ -238,6 +238,52 @@ def train_stage1(
 
     pbar = tqdm(dataloader, desc="Stage1 Training", dynamic_ncols=True)
 
+    detect_anomaly = os.environ.get("LAMB_DETECT_ANOMALY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+    nan_guard = os.environ.get("LAMB_NAN_GUARD", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+    detach_memory = os.environ.get("LAMB_DETACH_MEMORY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+    nan_guard_every = int(os.environ.get("LAMB_NAN_GUARD_EVERY", "1") or "1")
+    skipped_non_finite = 0
+
+    def _tensor_stats(name: str, t: torch.Tensor) -> str:
+        with torch.no_grad():
+            t_det = t.detach()
+            finite = torch.isfinite(t_det)
+            numel = int(t_det.numel())
+            finite_count = int(finite.sum().item()) if numel > 0 else 0
+            # Stats are best-effort; for all-non-finite tensors, min/max can be undefined.
+            t_float = t_det.float()
+            finite_vals = t_float[finite]
+            if finite_vals.numel() == 0:
+                return (
+                    f"{name}: shape={tuple(t_det.shape)} dtype={t_det.dtype} device={t_det.device} "
+                    f"finite=0/{numel}"
+                )
+            mn = float(finite_vals.min().item())
+            mx = float(finite_vals.max().item())
+            mean = float(finite_vals.mean().item())
+            return (
+                f"{name}: shape={tuple(t_det.shape)} dtype={t_det.dtype} device={t_det.device} "
+                f"finite={finite_count}/{numel} min={mn:.4g} max={mx:.4g} mean={mean:.4g}"
+            )
+
     for batch_idx, batch in enumerate(pbar):
         if global_step >= config.max_steps:
             break
@@ -253,10 +299,15 @@ def train_stage1(
 
         batch_size = dec_input_ids.size(0)
 
-        # Compress documents
-        memory_embeddings, encoder_hidden_states = model.compress_documents(
-            doc_input_ids, doc_attention_mask
+        autograd_ctx = (
+            torch.autograd.set_detect_anomaly(True) if detect_anomaly else contextlib.nullcontext()
         )
+
+        with autograd_ctx:
+            # Compress documents
+            memory_embeddings, encoder_hidden_states = model.compress_documents(
+                doc_input_ids, doc_attention_mask
+            )
 
         if config.use_clara_original:
             if len(set(num_docs_per_sample)) > 1:
@@ -292,13 +343,27 @@ def train_stage1(
 
             batch_memory_embeddings_tensor = torch.stack(padded_memory_embeddings)
 
-        # Forward through decoder with memory embeddings
-        outputs = model.forward_with_memory(
-            input_ids=dec_input_ids,
-            attention_mask=dec_attention_mask,
-            memory_embeddings=batch_memory_embeddings_tensor,  # will be replace(embeding(input_ids), memory)
-            labels=labels,
-        )
+            if detach_memory:
+                batch_memory_embeddings_tensor = batch_memory_embeddings_tensor.detach()
+
+            if nan_guard and (batch_idx % max(1, nan_guard_every) == 0):
+                pieces = [
+                    f"[NaNGuard] step={global_step} batch={batch_idx}",
+                    _tensor_stats("memory_embeddings", memory_embeddings),
+                    _tensor_stats("batch_memory_embeddings_tensor", batch_memory_embeddings_tensor),
+                ]
+                msg = "\n".join(pieces)
+                if "finite=0/" in msg or "finite=" in msg:
+                    # Only print; heavy checks already embedded in stats.
+                    print(msg)
+
+            # Forward through decoder with memory embeddings
+            outputs = model.forward_with_memory(
+                input_ids=dec_input_ids,
+                attention_mask=dec_attention_mask,
+                memory_embeddings=batch_memory_embeddings_tensor,
+                labels=labels,
+            )
 
         # Compute per-sample losses
         qa_loss = torch.tensor(0.0, device=config.device)
@@ -367,25 +432,54 @@ def train_stage1(
                     * config.mse_weight
                 )
 
-        # Total loss
-        total_loss = qa_loss + paraphrase_loss + mse_loss
+            # Total loss
+            total_loss = qa_loss + paraphrase_loss + mse_loss
+
+            if nan_guard and not torch.isfinite(total_loss).all().item():
+                skipped_non_finite += 1
+                print(
+                    "\n".join(
+                        [
+                            f"\x1b[91m[NaNGuard] Non-finite total_loss at step={global_step} batch={batch_idx} (skipped={skipped_non_finite})\x1b[0m",
+                            _tensor_stats("decoder_loss", cast(torch.Tensor, outputs["loss"])),
+                            _tensor_stats("qa_loss", qa_loss),
+                            _tensor_stats("paraphrase_loss", paraphrase_loss),
+                            _tensor_stats("mse_loss", mse_loss),
+                        ]
+                    )
+                )
+                optimizer.zero_grad(set_to_none=True)
+                continue
 
         # Backward and optimize
         if config.gradient_accumulation_steps > 1:
             total_loss = total_loss / config.gradient_accumulation_steps
 
-        detect_anomaly = os.environ.get("LAMB_DETECT_ANOMALY", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "y",
-            "on",
-        }
-        if detect_anomaly:
-            with torch.autograd.set_detect_anomaly(True):
+            try:
                 total_loss.backward()
-        else:
-            total_loss.backward()
+            except RuntimeError as e:
+                msg = str(e)
+                if nan_guard and ("nan" in msg.lower() or "inf" in msg.lower()):
+                    skipped_non_finite += 1
+                    print(
+                        "\n".join(
+                            [
+                                f"\x1b[91m[NaNGuard] Backward failed (skipped={skipped_non_finite}) at step={global_step} batch={batch_idx}: {msg}\x1b[0m",
+                                _tensor_stats("decoder_loss", cast(torch.Tensor, outputs["loss"])),
+                                _tensor_stats("qa_loss", qa_loss),
+                                _tensor_stats("paraphrase_loss", paraphrase_loss),
+                                _tensor_stats("mse_loss", mse_loss),
+                                _tensor_stats("memory_embeddings", memory_embeddings),
+                                _tensor_stats(
+                                    "batch_memory_embeddings_tensor",
+                                    batch_memory_embeddings_tensor,
+                                ),
+                            ]
+                        )
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    continue
+                raise
 
         if (batch_idx + 1) % config.gradient_accumulation_steps == 0:
             # Gradient clipping

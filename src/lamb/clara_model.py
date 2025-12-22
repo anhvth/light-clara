@@ -502,13 +502,13 @@ class ClaraModel(nn.Module):
 
         # Get base embeddings for all tokens
         base_embeds = embed_layer(input_ids)  # [batch, seq_len, hidden_size]
+        hidden_size = base_embeds.size(-1)
 
         # Find positions of memory tokens and build index lists
         mem_token_ids_set = set(self.mem_token_ids.tolist())
-
-        batch_indices = []
-        seq_indices = []
-        mem_indices = []
+        batch_indices: list[int] = []
+        seq_indices: list[int] = []
+        mem_indices: list[int] = []
 
         for b in range(batch_size):
             mem_idx = 0
@@ -520,40 +520,42 @@ class ClaraModel(nn.Module):
                     mem_indices.append(mem_idx)
                     mem_idx += 1
 
-        # Verify replacement count
-        assert len(batch_indices) == memory_embeddings.size(1) * batch_size, (
-            f"Found {len(batch_indices)} memory tokens, expected {memory_embeddings.size(1) * batch_size}"
-        )
-
         if not batch_indices:
             return base_embeds
 
-        # Build replacement tensor using purely functional operations (no in-place)
-        # This avoids autograd issues with modified tensors
+        expected = memory_embeddings.size(1) * batch_size
+        if len(batch_indices) != expected:
+            raise ValueError(
+                "Mismatch between memory placeholders in decoder input and provided memory embeddings: "
+                f"found={len(batch_indices)} expected={expected}. "
+                "This can happen if the decoder prompt was truncated before all <mem_*> tokens. "
+                "Try increasing dec_max_length/max_seq_len or reducing generation_top_k."
+            )
 
-        # Convert indices to tensors
-        batch_idx_tensor = torch.tensor(batch_indices, device=base_embeds.device, dtype=torch.long)
-        seq_idx_tensor = torch.tensor(seq_indices, device=base_embeds.device, dtype=torch.long)
-        mem_idx_tensor = torch.tensor(mem_indices, device=base_embeds.device, dtype=torch.long)
+        # Fully out-of-place replacement (avoid any in-place indexing ops).
+        device = base_embeds.device
+        batch_idx_tensor = torch.tensor(batch_indices, device=device, dtype=torch.long)
+        seq_idx_tensor = torch.tensor(seq_indices, device=device, dtype=torch.long)
+        mem_idx_tensor = torch.tensor(mem_indices, device=device, dtype=torch.long)
 
-        # Create a mask for positions that should be replaced
-        mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=base_embeds.device)
-        mask[batch_idx_tensor, seq_idx_tensor] = True
+        mem_to_replace = memory_embeddings[batch_idx_tensor, mem_idx_tensor]  # [N, hidden_size]
+        linear_idx = batch_idx_tensor * seq_len + seq_idx_tensor  # [N]
 
-        # Gather memory embeddings in correct order
-        mem_to_replace = memory_embeddings[batch_idx_tensor, mem_idx_tensor]
+        flat_len = batch_size * seq_len
 
-        # Build output tensor using scatter with purely functional approach
-        # Create expanded tensors for where operation
-        expanded_mask = mask.unsqueeze(-1)  # [batch, seq_len, 1]
+        # Build a float mask via out-of-place scatter.
+        mask_flat = base_embeds.new_zeros((flat_len,))
+        mask_flat = mask_flat.scatter(0, linear_idx, 1.0)
+        mask = mask_flat.view(batch_size, seq_len, 1)
 
-        # Build replacement values tensor (same shape as base_embeds)
-        replacement_values = torch.zeros_like(base_embeds)
-        replacement_values[batch_idx_tensor, seq_idx_tensor] = mem_to_replace
+        # Build replacement tensor via out-of-place scatter.
+        repl_flat = base_embeds.new_zeros((flat_len, hidden_size))
+        repl_index = linear_idx.unsqueeze(-1).expand(-1, hidden_size)
+        repl_flat = repl_flat.scatter(0, repl_index, mem_to_replace)
+        repl = repl_flat.view(batch_size, seq_len, hidden_size)
 
-        # Use where to select between base and replacement (fully functional)
-        inputs_embeds = torch.where(expanded_mask, replacement_values, base_embeds)
-
+        # Blend: keep base embeddings where mask=0, replace where mask=1.
+        inputs_embeds = base_embeds * (1.0 - mask) + repl
         return inputs_embeds
 
     def get_trainable_params(self) -> list[nn.Parameter]:

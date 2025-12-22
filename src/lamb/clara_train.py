@@ -374,7 +374,18 @@ def train_stage1(
         if config.gradient_accumulation_steps > 1:
             total_loss = total_loss / config.gradient_accumulation_steps
 
-        total_loss.backward()
+        detect_anomaly = os.environ.get("LAMB_DETECT_ANOMALY", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+        if detect_anomaly:
+            with torch.autograd.set_detect_anomaly(True):
+                total_loss.backward()
+        else:
+            total_loss.backward()
 
         if (batch_idx + 1) % config.gradient_accumulation_steps == 0:
             # Gradient clipping

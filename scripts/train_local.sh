@@ -17,4 +17,4 @@ python -m lamb.cli \
   --debug_num_samples 1 \
   --debug_repeat_dataset 0 \
   --report_to tensorboard \
-  --use_clara_original True \
+  --use_clara_original False \

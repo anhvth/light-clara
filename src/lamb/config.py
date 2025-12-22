@@ -1,4 +1,5 @@
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -109,6 +110,28 @@ class ClaraConfig:
         if not self.attn_implementation:
             self.attn_implementation = pick_attn_implementation(self.device)
 
+        # Normalize logging backend. Empty means "auto" based on legacy tensorboard flag.
+        report_to = (self.report_to or "").strip().lower()
+        valid_report_to = {"tensorboard", "wandb", "none", ""}
+        if report_to not in valid_report_to:
+            raise ValueError(
+                "report_to must be one of: tensorboard, wandb, none (or empty for auto)"
+            )
+
+        if not report_to:
+            report_to = "tensorboard" if self.tensorboard else "none"
+
+        # Keep legacy tensorboard flag in sync with report_to.
+        if report_to == "tensorboard":
+            self.tensorboard = True
+        else:
+            self.tensorboard = False
+
+        self.report_to = report_to
+
+        if not self.run_name:
+            self.run_name = time.strftime("%m-%d-%H-%M")
+
     # Checkpointing
     save_steps: int = 500
     checkpoint_dir: str = "checkpoints"
@@ -118,12 +141,19 @@ class ClaraConfig:
     eval_steps: int = 100
     do_eval: bool = False
     verbose: bool = False
+    # Logging backend (huggingface-style). Empty -> derive from tensorboard flag/env.
+    report_to: str = ""
+    run_name: str = ""
 
     # TensorBoard
     tensorboard: bool = field(default_factory=lambda: env_flag("LAMB_TENSORBOARD"))
     tensorboard_logdir: str = "logs/tensorboard"
     # Logging cadence in optimizer update steps (i.e., parameter updates).
     tensorboard_every_steps: int = 5
+
+    # Weights & Biases
+    wandb_project: str = "clara"
+    wandb_entity: str = ""
 
     # Debug Mode
     debug_mode: bool = False  # Enable debug features

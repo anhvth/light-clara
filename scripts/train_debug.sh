@@ -15,4 +15,5 @@ uv run lamb \
   --debug_mode False \
   --debug_every_steps 1 \
   --debug_num_samples 1 \
-  --debug_repeat_dataset 100
+  --debug_repeat_dataset 100 \
+  --report_to tensorboard

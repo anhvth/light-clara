@@ -27,6 +27,11 @@ try:
 except ImportError:
     ipdb = None  # type: ignore
 
+try:
+    import wandb
+except ImportError:
+    wandb = None  # type: ignore
+
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -153,16 +158,65 @@ def train_stage1(
         collate_fn=collate_fn,
     )
 
-    # Setup TensorBoard
-    writer = None
-    if config.tensorboard and SummaryWriter is not None:
-        run_dir = os.path.join(config.tensorboard_logdir, time.strftime("%Y%m%d_%H%M%S"))
-        os.makedirs(run_dir, exist_ok=True)
-        writer = SummaryWriter(log_dir=run_dir)
-        print(f"[TensorBoard] Logging to {run_dir}")
+    report_to = str(getattr(config, "report_to", "none") or "none").lower()
+    run_name = str(getattr(config, "run_name", "") or time.strftime("%m-%d-%H-%M"))
 
-        writer.add_scalar("train/lr_encoder", encoder_lr, global_step=0)
-        writer.add_scalar("train/lr_generator", generator_lr, global_step=0)
+    writer: SummaryWriter | None = None
+    wandb_run: Any | None = None
+    log_every = int(getattr(config, "tensorboard_every_steps", 0) or 0)
+
+    if report_to == "tensorboard":
+        if SummaryWriter is None:
+            print(
+                "[TensorBoard] Logging requested but SummaryWriter unavailable. Install with: uv add tensorboard"
+            )
+        else:
+            run_dir = os.path.join(config.tensorboard_logdir, run_name)
+            os.makedirs(run_dir, exist_ok=True)
+            writer = SummaryWriter(log_dir=run_dir)
+            print(f"[TensorBoard] Logging to {run_dir}")
+
+            writer.add_scalar("train/lr_encoder", encoder_lr, global_step=0)
+            writer.add_scalar("train/lr_generator", generator_lr, global_step=0)
+    elif report_to == "wandb":
+        if wandb is None:
+            print("[W&B] Logging requested but wandb is not installed. Install with: uv add wandb")
+        else:
+            safe_config = {
+                key: (val if isinstance(val, (str, int, float, bool)) else str(val))
+                for key, val in config.__dict__.items()
+            }
+            wandb_run = wandb.init(
+                project=config.wandb_project or "clara",
+                entity=config.wandb_entity or None,
+                name=run_name,
+                config=safe_config,
+            )
+            wandb_run.log(
+                {
+                    "train/lr_encoder": encoder_lr,
+                    "train/lr_generator": generator_lr,
+                },
+                step=0,
+            )
+            print(
+                f"[W&B] Logging to project={config.wandb_project or 'clara'} run={wandb_run.name}"
+            )
+    elif report_to != "none":
+        print(f"[Logging] Unknown report_to={report_to}; logging disabled")
+
+    def _log_scalars(metrics: dict[str, float], step: int) -> None:
+        if writer is not None:
+            for key, val in metrics.items():
+                writer.add_scalar(key, val, step)
+        if wandb_run is not None:
+            wandb_run.log(metrics, step=step)
+
+    def _log_text(name: str, value: str, step: int) -> None:
+        if writer is not None:
+            writer.add_text(name, value, step)
+        if wandb_run is not None:
+            wandb_run.log({name: value}, step=step)
 
     # Training loop
     model.train()
@@ -174,7 +228,6 @@ def train_stage1(
     running_paraphrase_loss = 0.0
     running_mse_loss = 0.0
     running_total_loss = 0.0
-    log_every = int(getattr(config, "tensorboard_every_steps", 0) or 0)
 
     pbar = tqdm(dataloader, desc="Stage1 Training", dynamic_ncols=True)
 
@@ -290,19 +343,24 @@ def train_stage1(
             running_mse_loss += mse_loss.item()
             running_total_loss += total_loss.item() * config.gradient_accumulation_steps
 
-            # Log to tensorboard
-            if writer and log_every and global_step % log_every == 0:
+            # Log to TensorBoard/W&B
+            if log_every and global_step % log_every == 0:
                 avg_qa = running_qa_loss / log_every
                 avg_para = running_paraphrase_loss / log_every
                 avg_mse = running_mse_loss / log_every
                 avg_total = running_total_loss / log_every
 
-                writer.add_scalar("train/qa_loss", avg_qa, global_step)
-                writer.add_scalar("train/paraphrase_loss", avg_para, global_step)
-                writer.add_scalar("train/mse_loss", avg_mse, global_step)
-                writer.add_scalar("train/total_loss", avg_total, global_step)
-                writer.add_scalar("train/lr_encoder", encoder_lr, global_step)
-                writer.add_scalar("train/lr_generator", generator_lr, global_step)
+                _log_scalars(
+                    {
+                        "train/qa_loss": avg_qa,
+                        "train/paraphrase_loss": avg_para,
+                        "train/mse_loss": avg_mse,
+                        "train/total_loss": avg_total,
+                        "train/lr_encoder": encoder_lr,
+                        "train/lr_generator": generator_lr,
+                    },
+                    global_step,
+                )
 
                 running_qa_loss = 0.0
                 running_paraphrase_loss = 0.0
@@ -334,14 +392,14 @@ def train_stage1(
                         buf.write(f"\n[Debug] Generation failed: {e}\n")
                     tb_chunks.append(_strip_ansi(buf.getvalue()))
 
-                # Exactly one TensorBoard text event per step.
-                if writer is not None and tb_chunks:
+                # Exactly one text event per step.
+                if tb_chunks:
                     full = "".join(tb_chunks).strip()
                     max_chars = 30_000
                     if len(full) > max_chars:
                         full = full[:max_chars] + f"\n…(+{len(full) - max_chars} chars truncated)"
                     if full:
-                        writer.add_text("debug/step", full, global_step)
+                        _log_text("debug/step", full, global_step)
 
             # Save checkpoint
             if config.save_steps > 0 and global_step % config.save_steps == 0:
@@ -354,5 +412,7 @@ def train_stage1(
 
     if writer:
         writer.close()
+    if wandb_run is not None:
+        wandb_run.finish()
 
     print(f"\n[Train Stage 1] Completed {global_step} optimizer step(s)")

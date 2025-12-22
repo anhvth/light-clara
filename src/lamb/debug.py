@@ -75,6 +75,18 @@ def _normalize_for_contains(s: str) -> str:
     return s
 
 
+def _append_table(lines: list[str], title: str, rows: list[tuple[str, str]]) -> None:
+    """Append a simple aligned key/value table into the log buffer."""
+
+    if not rows:
+        return
+
+    lines.append(title)
+    pad = max(len(k) for k, _ in rows)
+    for k, v in rows:
+        lines.append(f"  {k.ljust(pad)} : {v}")
+
+
 def _answer_in_docs(answer: str, docs: list[str]) -> tuple[bool, int | None]:
     """Best-effort check whether the literal answer appears in any doc.
 
@@ -100,6 +112,7 @@ def debug_reproduce_training(
     verbose: bool = False,
     stats_out: Any = None,
 ) -> bool:
+    log: list[str] = []
     tokenizer = model.tokenizer
     splitter = "<|im_start|>assistant\n"
     if splitter not in txt:
@@ -114,13 +127,6 @@ def debug_reproduce_training(
     ctx_with_splitter = ctx_raw + splitter
     ctx_ids = tokenizer.encode(ctx_with_splitter, add_special_tokens=False)
     tgt_ids = tokenizer.encode(tgt_str, add_special_tokens=False)
-
-    if verbose:
-        print("\n================ TRAINING-REPRO DEBUG ================")
-        print(f"[Dbg] Context chars: {len(ctx_with_splitter)}, target chars: {len(tgt_str)}")
-        print(f"[Dbg] Context tokens: {len(ctx_ids)}, target tokens: {len(tgt_ids)}")
-        print(f"[Dbg] Context head: {ctx_with_splitter[:120].replace(chr(10), '↩')}...")
-        print(f"[Dbg] Target head: {tgt_str[:120].replace(chr(10), '↩')}...")
 
     ctx_t = torch.tensor([ctx_ids], device=model.config.device)
     ctx_mask = (ctx_t != tokenizer.pad_token_id).long()
@@ -161,20 +167,23 @@ def debug_reproduce_training(
     lm_loss = functional.cross_entropy(
         logits.view(-1, logits.size(-1)), torch.tensor(gold_next, device=logits.device)
     ).item()
+    if verbose:
+        log.append("================ TRAINING-REPRO DEBUG ================")
+        log.append(f"[Dbg] Context chars: {len(ctx_with_splitter)}, target chars: {len(tgt_str)}")
+        log.append(f"[Dbg] Context tokens: {len(ctx_ids)}, target tokens: {len(tgt_ids)}")
+        log.append(f"[Dbg] Context head: {ctx_with_splitter[:120].replace(chr(10), '↩')}...")
+        log.append(f"[Dbg] Target head: {tgt_str[:120].replace(chr(10), '↩')}...")
+        log.append("")
 
-    if verbose and tgt_ids:
-        t0 = tgt_ids[0]
-        t0_dec = _decode_to_str(tokenizer, [t0]).replace(chr(10), "↩")
-        print(f"[Dbg] t0 (FIRST target token): {t0} -> {t0_dec!r}")
-        print(
-            "[Dbg] The table below compares predicted NEXT token vs gold NEXT token, so it starts at t1 (not t0)."
-        )
+    summary_rows: list[tuple[str, str]] = [
+        ("acc", f"{acc * 100:.2f}% ({sum(matches)}/{len(matches)})"),
+        ("lm_loss", f"{lm_loss:.6f}"),
+    ]
+    if tgt_ids:
+        summary_rows.append(("t0", f"{tgt_ids[0]} -> {_decode_to_str(tokenizer, [tgt_ids[0]])}"))
+    _append_table(log, "[Dbg] Teacher-forced metrics", summary_rows)
+    log.append("")
 
-    print(f"[Dbg] Teacher-forced next-token acc: {acc * 100:.2f}% ({sum(matches)}/{len(matches)})")
-    print(f"[Dbg] LM loss (gold CE on t1..): {lm_loss:.6f}")
-
-    # High-quality token debug: show the history (ctx + t0) uncolored, then the tokens we
-    # compute CE on (t1..) colored by the student's probability assigned to that gold token.
     if tgt_ids and gold_next and gold_scores:
         history_ids = [*ctx_ids, tgt_ids[0]]
         history_text = _decode_to_str(tokenizer, history_ids)
@@ -191,14 +200,14 @@ def debug_reproduce_training(
         if n < len(gold_next):
             suffix = f"{_ansi_reset()}…(+{len(gold_next) - n} tokens)"
 
-        print(
+        log.append(
             "[Dbg] Gold target colored by student P(gold) (red=0, green=1). "
-            "Note: t0 (often '<think>') is unscored; coloring starts at t1 (CE shift).\n"
-            f"{history_text}{''.join(colored_parts)}{suffix}"
+            "Note: t0 (often '<think>') is unscored; coloring starts at t1 (CE shift)."
         )
+        log.append(f"{history_text}{''.join(colored_parts)}{suffix}")
 
         if verbose and gold_ranks:
-            print("[Dbg] Token scores (first positions):")
+            log.append("[Dbg] Token scores (first positions):")
             for i in range(n):
                 g_id = gold_next[i]
                 g_s = _decode_to_str(tokenizer, [g_id]).replace("\n", "↩")
@@ -206,7 +215,11 @@ def debug_reproduce_training(
                 p_s = _decode_to_str(tokenizer, [p_id]).replace("\n", "↩") if p_id >= 0 else ""
                 score = float(gold_scores[i])
                 rank = int(gold_ranks[i]) if i < len(gold_ranks) else -1
-                print(f"  {i:02d}: P(gold)={score:7.4f} rank={rank:6d} | gold:{g_s!r} pred:{p_s!r}")
+                log.append(
+                    f"  {i:02d}: P(gold)={score:7.4f} rank={rank:6d} | gold:{g_s!r} pred:{p_s!r}"
+                )
+
+        log.append("")
 
     if stats_out is not None:
         with contextlib.suppress(Exception):
@@ -216,15 +229,17 @@ def debug_reproduce_training(
             stats_out["teacher_forced_total"] = len(matches)
 
     if verbose:
-        print("[Dbg] Token-by-token (gold_next vs pred_next):")
+        log.append("[Dbg] Token-by-token (gold_next vs pred_next):")
         for i in range(compare_n):
             g = gold_next[i]
             p = pred_next[i]
             g_s = _decode_to_str(tokenizer, [g]).replace("\n", "↩")
             p_s = _decode_to_str(tokenizer, [p]).replace("\n", "↩")
             ok = "=" if g == p else "≠"
-            print(f"  {i:02d}: {g:6d} {ok} {p:6d} | gold:{g_s!r} pred:{p_s!r}")
+            log.append(f"  {i:02d}: {g:6d} {ok} {p:6d} | gold:{g_s!r} pred:{p_s!r}")
+        log.append("")
 
+    greedy_matches = False
     if len(tgt_ids) >= 1:
         seed = tgt_ids[0]
         max_new = max(1, 2 * len(tgt_ids))
@@ -249,35 +264,41 @@ def debug_reproduce_training(
                 break
             next_in = torch.tensor([[nxt]], device=model.config.device)
 
+        full_match = gen_ids[: len(tgt_ids)] == tgt_ids
+        greedy_matches = bool(full_match)
+
         if verbose:
             gold_preview = _decode_to_str(tokenizer, tgt_ids[: min(len(tgt_ids), 64)])
             gen_preview = _decode_to_str(tokenizer, gen_ids[: min(len(gen_ids), 64)])
-            print(f"[Dbg] Gold decode (head): {gold_preview[:300].replace(chr(10), '↩')}")
-            print(f"[Dbg] Greedy decode (seeded) head: {gen_preview[:300].replace(chr(10), '↩')}")
-
-        full_match = gen_ids[: len(tgt_ids)] == tgt_ids
-        if verbose:
-            print(f"[Dbg] Greedy seeded full-match (prefix length {len(tgt_ids)}): {full_match}")
+            log.append(f"[Dbg] Gold decode (head): {gold_preview[:300].replace(chr(10), '↩')}")
+            log.append(
+                f"[Dbg] Greedy decode (seeded) head: {gen_preview[:300].replace(chr(10), '↩')}"
+            )
+            log.append(
+                f"[Dbg] Greedy seeded full-match (prefix length {len(tgt_ids)}): {full_match}"
+            )
+            log.append("")
 
     if verbose and tgt_ids:
         recon = [tgt_ids[0], *pred_next[: len(gold_next)]]
         recon_txt = _decode_to_str(tokenizer, recon)
-        print(f"[Dbg] Teacher-forced recon decode (head): {recon_txt[:300].replace(chr(10), '↩')}")
+        log.append(
+            f"[Dbg] Teacher-forced recon decode (head): {recon_txt[:300].replace(chr(10), '↩')}"
+        )
+        log.append("")
 
     success = (acc >= 0.999) and (lm_loss < 0.1) and (len(gold_next) > 0)
-
-    greedy_matches = False
-    if len(tgt_ids) >= 1:
-        greedy_matches = gen_ids[: len(tgt_ids)] == tgt_ids
 
     if stats_out is not None:
         with contextlib.suppress(Exception):
             stats_out["greedy_matches"] = bool(greedy_matches)
 
-    print(f"[Dbg] Teacher-forced SUCCESS: {success} (acc={acc:.4f}, lm_loss={lm_loss:.6f})")
-    print(f"[Dbg] Greedy match: {greedy_matches}")
+    log.append(f"[Dbg] Teacher-forced SUCCESS: {success} (acc={acc:.4f}, lm_loss={lm_loss:.6f})")
+    log.append(f"[Dbg] Greedy match: {greedy_matches}")
     if verbose:
-        print("======================================================\n")
+        log.append("======================================================\n")
+
+    print("\n".join(log))
 
     return bool(success)
 
@@ -294,6 +315,7 @@ def debug_reproduce_clara(
 
     Shows gold answer tokens colored by model's probability (red=low, green=high).
     """
+    log: list[str] = []
     was_training = model.training
     model.eval()
     tokenizer = model.tokenizer
@@ -361,42 +383,48 @@ def debug_reproduce_clara(
     else:
         ce_loss = 0.0
 
-    print("\n" + "=" * 80)
-    print(f"[Debug] Sample {batch['indices'][sample_idx]}")
-    print("=" * 80)
+    log.append("\n" + "=" * 80)
+    log.append(f"[Debug] Sample {batch['indices'][sample_idx]}")
+    log.append("=" * 80)
 
     questions = batch.get("questions")
     if isinstance(questions, list) and sample_idx < len(questions):
         q = str(questions[sample_idx]).strip()
         if q:
-            print(f"[Debug] Question (gold): {_preview_text(q, max_chars=400)}")
+            log.append(f"[Debug] Question (gold): {_preview_text(q, max_chars=400)}")
 
     answers = batch.get("answers")
     gold_answer = ""
     if isinstance(answers, list) and sample_idx < len(answers):
         gold_answer = str(answers[sample_idx]).strip()
         if gold_answer:
-            print(f"[Debug] Answer (gold): {_preview_text(gold_answer, max_chars=300)}")
+            log.append(f"[Debug] Answer (gold): {_preview_text(gold_answer, max_chars=300)}")
 
     docs_per_sample = batch.get("docs_per_sample")
     if isinstance(docs_per_sample, list) and sample_idx < len(docs_per_sample):
         docs = docs_per_sample[sample_idx]
         if isinstance(docs, list) and docs:
-            print("[Debug] Background (raw docs):")
+            log.append("[Debug] Background (raw docs):")
             for i, d in enumerate(docs):
                 d_str = _preview_text(str(d).strip())
-                print(f"  [Doc {i}] {d_str}")
-            print("")
+                log.append(f"  [Doc {i}] {d_str}")
+            log.append("")
 
             if gold_answer:
                 found, doc_idx = _answer_in_docs(gold_answer, [str(x) for x in docs])
                 if found:
-                    print(f"[Debug] Answer literal found in docs: True (doc={doc_idx})\n")
+                    log.append(f"[Debug] Answer literal found in docs: True (doc={doc_idx})\n")
                 else:
-                    print("[Debug] Answer literal found in docs: False\n")
+                    log.append("[Debug] Answer literal found in docs: False\n")
 
-    print(f"[Debug] Answer token accuracy: {acc * 100:.2f}% ({sum(matches)}/{len(matches)})")
-    print(f"[Debug] Answer CE loss: {ce_loss:.6f}")
+    _append_table(
+        log,
+        "[Debug] Answer metrics",
+        [
+            ("token_acc", f"{acc * 100:.2f}% ({sum(matches)}/{len(matches)})"),
+            ("ce_loss", f"{ce_loss:.6f}"),
+        ],
+    )
 
     # Color-coded output: show prompt + answer tokens colored by probability
     # Find where answer starts (first non -100 label)
@@ -432,12 +460,14 @@ def debug_reproduce_clara(
         if n < len(answer_ids):
             suffix = f"{_ansi_reset()}…(+{len(answer_ids) - n} tokens)"
 
-        print(
+        log.append(
             "\n[Debug] Answer colored by P(gold token) - red=low confidence, green=high confidence:\n"
             f"{prompt_text}{''.join(colored_parts)}{suffix}\n"
         )
 
-    print("=" * 80 + "\n")
+    log.append("=" * 80 + "\n")
+
+    print("\n".join(log))
 
     if was_training:
         model.train()

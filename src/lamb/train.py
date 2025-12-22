@@ -14,6 +14,11 @@ try:
 except ImportError:
     SummaryWriter = None  # type: ignore
 
+try:
+    import wandb
+except ImportError:
+    wandb = None  # type: ignore
+
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizer
 
@@ -34,7 +39,12 @@ def train(
     model.train()
 
     writer = None
-    tb_enabled = bool(getattr(config, "tensorboard", False))
+    wandb_run = None
+    report_to = str(getattr(config, "report_to", "none") or "none").lower()
+    run_name = str(getattr(config, "run_name", "") or time.strftime("%m-%d-%H-%M"))
+
+    tb_enabled = report_to == "tensorboard"
+    wb_enabled = report_to == "wandb"
     tb_logdir = str(getattr(config, "tensorboard_logdir", "logs/tensorboard"))
     tb_every_steps = int(getattr(config, "tensorboard_every_steps", 0) or 0)
     tb_text_every_steps = int(getattr(config, "tensorboard_text_every_steps", 0) or 0)
@@ -42,12 +52,10 @@ def train(
     if tb_enabled:
         if SummaryWriter is None:
             print(  # type: ignore[unreachable]
-                "[TB] TensorBoard logging requested but unavailable. "
-                "Install with: uv add tensorboard. "
+                "[TB] TensorBoard logging requested but unavailable. Install with: uv add tensorboard. "
             )
-            writer = None
         else:
-            run_dir = os.path.join(tb_logdir, time.strftime("%Y%m%d_%H%M%S"))
+            run_dir = os.path.join(tb_logdir, run_name)
             os.makedirs(run_dir, exist_ok=True)
             writer = SummaryWriter(log_dir=run_dir)
             print(f"[TB] Logging to {run_dir}")
@@ -62,6 +70,43 @@ def train(
                 f"device={config.device} dtype={config.dtype} attn={getattr(config, 'attn_implementation', None)}",
                 global_step=0,
             )
+    elif wb_enabled:
+        if wandb is None:
+            print("[W&B] Logging requested but wandb is not installed. Install with: uv add wandb")
+        else:
+            safe_config = {
+                key: (val if isinstance(val, (str, int, float, bool)) else str(val))
+                for key, val in config.__dict__.items()
+            }
+            wandb_run = wandb.init(
+                project=getattr(config, "wandb_project", "clara") or "clara",
+                entity=getattr(config, "wandb_entity", "") or None,
+                name=run_name,
+                config=safe_config,
+            )
+            wandb_run.log(
+                {
+                    "run/device": str(config.device),
+                    "run/dtype": str(getattr(config, "dtype", "")),
+                },
+                step=0,
+            )
+            print(
+                f"[W&B] Logging to project={getattr(config, 'wandb_project', 'clara') or 'clara'} run={wandb_run.name}"
+            )
+
+    def log_scalars(metrics: dict[str, float], step: int) -> None:
+        if writer is not None:
+            for key, val in metrics.items():
+                writer.add_scalar(key, val, step)
+        if wandb_run is not None:
+            wandb_run.log(metrics, step=step)
+
+    def log_text(name: str, value: str, step: int) -> None:
+        if writer is not None:
+            writer.add_text(name, value, step)
+        if wandb_run is not None:
+            wandb_run.log({name: value}, step=step)
 
     def collate_fn(batch: list[dict]) -> list[str]:
         return [b["content"] for b in batch]
@@ -173,17 +218,18 @@ def train(
                         stats_out=dbg_stats,
                     )
 
-                if writer is not None and dbg_stats:
+                if (writer is not None or wandb_run is not None) and dbg_stats:
+                    dbg_metrics: dict[str, float] = {}
                     if "teacher_forced_acc" in dbg_stats:
-                        writer.add_scalar(
-                            "dbg/teacher_forced_acc", dbg_stats["teacher_forced_acc"], step
+                        dbg_metrics["dbg/teacher_forced_acc"] = float(
+                            dbg_stats["teacher_forced_acc"]
                         )
                     if "lm_loss" in dbg_stats:
-                        writer.add_scalar("dbg/lm_loss", dbg_stats["lm_loss"], step)
+                        dbg_metrics["dbg/lm_loss"] = float(dbg_stats["lm_loss"])
                     if "greedy_matches" in dbg_stats:
-                        writer.add_scalar(
-                            "dbg/greedy_matches", float(bool(dbg_stats["greedy_matches"])), step
-                        )
+                        dbg_metrics["dbg/greedy_matches"] = float(bool(dbg_stats["greedy_matches"]))
+                    if dbg_metrics:
+                        log_scalars(dbg_metrics, step)
 
                 # if ok and False:
                 #     print(f"[Train] Overfit success at step={step}; stopping.")
@@ -241,29 +287,34 @@ def train(
             postfix["teacher_student_acc_avg"] = f"{running_avg_teacher_student_acc * 100:.2f}%"
         pbar.set_postfix(ordered_dict=postfix)
 
-        if writer is not None and tb_every_steps and (step % tb_every_steps == 0):
+        if (
+            (writer is not None or wandb_run is not None)
+            and tb_every_steps
+            and (step % tb_every_steps == 0)
+        ):
             try:
                 lr = float(optimizer.param_groups[0].get("lr", 0.0))
             except Exception:
                 lr = 0.0
 
-            writer.add_scalar("train/loss_step", avg_loss, step)
-            writer.add_scalar("train/loss_smoothed", running_avg_loss, step)
-            writer.add_scalar("train/token_acc_step", avg_token_acc, step)
-            writer.add_scalar("train/token_acc_smoothed", running_avg_token_acc, step)
+            metrics: dict[str, float] = {
+                "train/loss_step": avg_loss,
+                "train/loss_smoothed": running_avg_loss,
+                "train/token_acc_step": avg_token_acc,
+                "train/token_acc_smoothed": running_avg_token_acc,
+                "train/ce_loss_step": avg_ce,
+                "train/ce_alpha": avg_alpha,
+                "train/lr": lr,
+            }
             if saw_teacher_student:
-                writer.add_scalar("train/teacher_student_acc_step", avg_teacher_student_acc, step)
-                writer.add_scalar(
-                    "train/teacher_student_acc_smoothed", running_avg_teacher_student_acc, step
-                )
-            if saw_teacher_student:
-                writer.add_scalar("train/kl_loss_step", avg_kl, step)
-            writer.add_scalar("train/ce_loss_step", avg_ce, step)
-            writer.add_scalar("train/ce_alpha", avg_alpha, step)
-            writer.add_scalar("train/lr", lr, step)
+                metrics["train/teacher_student_acc_step"] = avg_teacher_student_acc
+                metrics["train/teacher_student_acc_smoothed"] = running_avg_teacher_student_acc
+                metrics["train/kl_loss_step"] = avg_kl
+
+            log_scalars(metrics, step)
 
             if tb_text_every_steps and (step % tb_text_every_steps == 0) and debug_txt is not None:
-                writer.add_text("samples/raw", debug_txt[:2000], step)
+                log_text("samples/raw", debug_txt[:2000], step)
 
         if step % 5 == 0 and config.device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -271,3 +322,5 @@ def train(
     if writer is not None:
         writer.flush()
         writer.close()
+    if wandb_run is not None:
+        wandb_run.finish()

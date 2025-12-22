@@ -528,23 +528,31 @@ class ClaraModel(nn.Module):
         if not batch_indices:
             return base_embeds
 
-        # Create replacement tensor without in-place operations
-        # Use indexing assignment approach that's autograd-safe
-        inputs_embeds = base_embeds.clone()
+        # Build replacement tensor using purely functional operations (no in-place)
+        # This avoids autograd issues with modified tensors
 
-        # Build indices tensors for advanced indexing
+        # Convert indices to tensors
         batch_idx_tensor = torch.tensor(batch_indices, device=base_embeds.device, dtype=torch.long)
         seq_idx_tensor = torch.tensor(seq_indices, device=base_embeds.device, dtype=torch.long)
         mem_idx_tensor = torch.tensor(mem_indices, device=base_embeds.device, dtype=torch.long)
 
-        # Gather the memory embeddings to replace
+        # Create a mask for positions that should be replaced
+        mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=base_embeds.device)
+        mask[batch_idx_tensor, seq_idx_tensor] = True
+
+        # Gather memory embeddings in correct order
         mem_to_replace = memory_embeddings[batch_idx_tensor, mem_idx_tensor]
 
-        # Use index_put_ which is the proper PyTorch way for this operation
-        # Note: index_put_ is in-place, but it's on a cloned tensor that's not in the graph yet
-        inputs_embeds = inputs_embeds.index_put(
-            (batch_idx_tensor, seq_idx_tensor), mem_to_replace, accumulate=False
-        )
+        # Build output tensor using scatter with purely functional approach
+        # Create expanded tensors for where operation
+        expanded_mask = mask.unsqueeze(-1)  # [batch, seq_len, 1]
+
+        # Build replacement values tensor (same shape as base_embeds)
+        replacement_values = torch.zeros_like(base_embeds)
+        replacement_values[batch_idx_tensor, seq_idx_tensor] = mem_to_replace
+
+        # Use where to select between base and replacement (fully functional)
+        inputs_embeds = torch.where(expanded_mask, replacement_values, base_embeds)
 
         return inputs_embeds
 

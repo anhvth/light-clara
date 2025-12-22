@@ -89,10 +89,25 @@ class ClaraConfig:
 
     # Device
     device: str = field(default_factory=pick_device)
-    dtype: torch.dtype = field(default_factory=lambda: pick_dtype(pick_device()))
-    attn_implementation: str = field(
-        default_factory=lambda: pick_attn_implementation(pick_device())
-    )
+    dtype: torch.dtype = field(init=False)
+    bf16: bool = False
+    fp16: bool = False
+    attn_implementation: str = ""
+
+    def __post_init__(self) -> None:
+        if self.bf16 and self.fp16:
+            raise ValueError("Cannot set both bf16 and fp16")
+        if self.bf16 or self.fp16:
+            if self.device != "cuda":
+                raise ValueError("--bf16/--fp16 require device cuda")
+            if self.bf16 and not torch.cuda.is_bf16_supported():
+                raise RuntimeError("cuda device does not support bfloat16")
+            self.dtype = torch.bfloat16 if self.bf16 else torch.float16
+        else:
+            self.dtype = pick_dtype(self.device)
+
+        if not self.attn_implementation:
+            self.attn_implementation = pick_attn_implementation(self.device)
 
     # Checkpointing
     save_steps: int = 500

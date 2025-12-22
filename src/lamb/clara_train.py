@@ -12,6 +12,8 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+# Import for original CLaRa MSE loss computation
+from lamb.bridge import compute_mse_loss_original
 from lamb.clara_collate import make_stage1_collate_fn
 from lamb.clara_model import ClaraModel
 from lamb.config import ClaraConfig
@@ -119,14 +121,15 @@ def train_stage1(
         else:
             encoder_params.append(param)
 
-    for param in model.compressor.parameters():
-        if not param.requires_grad:
-            continue
-        pid = id(param)
-        if pid in seen:
-            continue
-        seen.add(pid)
-        encoder_params.append(param)
+    if model.compressor is not None:
+        for param in model.compressor.parameters():
+            if not param.requires_grad:
+                continue
+            pid = id(param)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            encoder_params.append(param)
 
     if not encoder_params and not generator_params:
         raise RuntimeError("No trainable parameters found for optimizer")

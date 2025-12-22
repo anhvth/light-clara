@@ -1,15 +1,15 @@
 """CLI for CLaRa training.
 
 Supports multi-stage training:
-- Stage 1: Compression pretraining (QA + paraphrase + MSE loss)
-- Stage 1.2: Compression instruction tuning
-- Stage 2: End-to-end retrieval training (future)
+ Stage 1: Compression pretraining (QA + paraphrase + MSE loss)
+ Stage 1.2: Compression instruction tuning
+ Stage 2: End-to-end retrieval training (future)
 """
 
-# pyright: reportMissingTypeStubs=false
-# unsloth must be imported before torch to enable QLoRA support
 import argparse
 import platform
+import sys
+import os
 from collections.abc import Sequence
 from dataclasses import MISSING, Field, fields
 from typing import Any
@@ -25,6 +25,24 @@ from lamb.clara_data import export_debug_jsonl, iter_clara_examples
 from lamb.clara_model import ClaraModel
 from lamb.clara_train import train_stage1
 from lamb.config import ClaraConfig
+
+
+def _maybe_print_env_diagnostics() -> None:
+    if os.environ.get("LAMB_ENV_DIAG", "").strip().lower() not in {"1", "true", "yes", "y", "on"}:
+        return
+
+    print("[Env] Diagnostics")
+    print(f"[Env] python={sys.executable}")
+    print(f"[Env] version={sys.version.splitlines()[0]}")
+    print(f"[Env] prefix={sys.prefix}")
+    print(f"[Env] sys.path[0:3]={sys.path[:3]}")
+
+    try:
+        import numpy as np  # type: ignore
+
+        print(f"[Env] numpy={np.__version__} file={getattr(np, '__file__', '')}")
+    except Exception as e:
+        print(f"[Env] numpy import failed: {type(e).__name__}: {e}")
 
 
 def _format_clara_sft(tokenizer: Any, *, question: str, docs: list[str], answer: str) -> str:
@@ -132,6 +150,7 @@ def _main(config: ClaraConfig) -> None:
 
 
 def main() -> None:
+    _maybe_print_env_diagnostics()
     parser = argparse.ArgumentParser(description="CLaRa training CLI")
     config_fields = fields(ClaraConfig)
 

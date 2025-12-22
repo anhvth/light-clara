@@ -8,9 +8,7 @@ import os
 import warnings
 from typing import Any, cast
 
-import torch
-
-# Unsloth must be imported before transformers/peft for optimizations
+# Unsloth must be imported before torch/transformers/peft for patching/optimizations
 try:
     # Suppress the import order warning since we're already importing before transformers
     with warnings.catch_warnings():
@@ -21,6 +19,7 @@ try:
 except ImportError:
     UNSLOTH_AVAILABLE = False
 
+import torch
 from peft import LoraConfig, TaskType
 from torch import nn
 from transformers import AutoModelForCausalLM, AutoTokenizer

@@ -46,14 +46,21 @@ def _disable_dynamo_ctx() -> contextlib.AbstractContextManager[None]:
     We only return a context manager when the callable actually supports it.
     """
 
-    candidates: list[object] = []
+    # Prefer global disable switches to avoid patched context-managers becoming
+    # torch._dynamo.optimize(...) (which errors if used as a context manager).
+    os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+    os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 
+    if torch_dynamo is not None:
+        # Best-effort global disable (no context manager).
+        with contextlib.suppress(Exception):
+            torch_dynamo.config.disable = True  # type: ignore[attr-defined]
+
+    # If we can obtain a *real* DisableContext, use it; otherwise no-op.
+    candidates: list[object] = []
     compiler = getattr(torch, "compiler", None)
     if compiler is not None:
-        disable = getattr(compiler, "disable", None)
-        if disable is not None:
-            candidates.append(disable)
-
+        candidates.append(getattr(compiler, "disable", None))
     if torch_dynamo is not None:
         candidates.append(getattr(torch_dynamo, "disable", None))
 
@@ -63,6 +70,9 @@ def _disable_dynamo_ctx() -> contextlib.AbstractContextManager[None]:
         try:
             ctx = disable_fn()
         except Exception:
+            continue
+        cls_name = ctx.__class__.__name__.lower()
+        if "optimize" in cls_name:
             continue
         if hasattr(ctx, "__enter__") and hasattr(ctx, "__exit__"):
             return ctx

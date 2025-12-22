@@ -4,8 +4,7 @@ export LAMB_NAN_GUARD_EVERY=1
 export LAMB_DISABLE_DYNAMO=1
 # Set to 1 to bisect whether NaNs originate from the encoder path.
 # export LAMB_DETACH_MEMORY=1
-# uv run lamb \
-python -m src.lamb.cli\
+uv run python -m lamb.cli \
   --stage stage1 \
   --dataset_limit 100000 \
   --dataset_split test \

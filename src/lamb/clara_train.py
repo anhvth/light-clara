@@ -12,6 +12,11 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+try:
+    import torch._dynamo as torch_dynamo
+except Exception:  # pragma: no cover
+    torch_dynamo = None
+
 # Import for original CLaRa MSE loss computation
 from lamb.bridge import compute_mse_loss_original
 from lamb.clara_collate import make_stage1_collate_fn
@@ -245,6 +250,13 @@ def train_stage1(
         "y",
         "on",
     }
+    disable_dynamo = os.environ.get("LAMB_DISABLE_DYNAMO", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
     nan_guard = os.environ.get("LAMB_NAN_GUARD", "").strip().lower() in {
         "1",
         "true",
@@ -303,7 +315,17 @@ def train_stage1(
             torch.autograd.set_detect_anomaly(True) if detect_anomaly else contextlib.nullcontext()
         )
 
-        with autograd_ctx:
+        # Unsloth's fused CE loss uses torch.compile / torch.func transforms internally.
+        # With anomaly detection enabled, TorchDynamo can crash on FakeTensor guard formatting
+        # (AttributeError: 'NoneType' object has no attribute 'filename'), masking the real error.
+        # In debug/anomaly mode, we prefer eager execution for correctness and better tracebacks.
+        dynamo_ctx: contextlib.AbstractContextManager[None]
+        if (disable_dynamo or detect_anomaly) and torch_dynamo is not None:
+            dynamo_ctx = torch_dynamo.disable()
+        else:
+            dynamo_ctx = contextlib.nullcontext()
+
+        with autograd_ctx, dynamo_ctx:
             # Compress documents
             memory_embeddings, encoder_hidden_states = model.compress_documents(
                 doc_input_ids, doc_attention_mask

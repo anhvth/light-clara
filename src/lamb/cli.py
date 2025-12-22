@@ -6,7 +6,8 @@ Supports multi-stage training:
 - Stage 2: End-to-end retrieval training (future)
 """
 # pyright: reportMissingTypeStubs=false
-
+import unsloth # noqa: F401
+# unsloth must be imported before torch to enable QLoRA support
 import argparse
 import platform
 from collections.abc import Sequence

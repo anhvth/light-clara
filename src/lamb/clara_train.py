@@ -241,13 +241,6 @@ def train_stage1(
 
     pbar = tqdm(dataloader, desc="Stage1 Training", dynamic_ncols=True)
 
-    detect_anomaly = os.environ.get("LAMB_DETECT_ANOMALY", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "y",
-        "on",
-    }
     disable_dynamo = os.environ.get("LAMB_DISABLE_DYNAMO", "").strip().lower() in {
         "1",
         "true",
@@ -314,11 +307,9 @@ def train_stage1(
 
         batch_size = dec_input_ids.size(0)
 
-        autograd_ctx = (
-            torch.autograd.set_detect_anomaly(True) if detect_anomaly else contextlib.nullcontext()
-        )
-
-        with autograd_ctx:
+        # Keep the training step fully under PyTorch/Unsloth defaults.
+        # (No anomaly-detection context managers here.)
+        with contextlib.nullcontext():
             # Compress documents
             memory_embeddings, encoder_hidden_states = model.compress_documents(
                 doc_input_ids, doc_attention_mask

@@ -6,7 +6,20 @@ git checkout dev
 git pull --ff-only
 
 # Use pip + an isolated venv (Unsloth can break if we mix with system site-packages).
-python -m venv .venv_h100
+# Kaggle images sometimes ship Python with ensurepip disabled, so venv creation can fail.
+if ! python -m venv .venv_h100 2>/dev/null; then
+  echo "[train_debug] python -m venv failed (ensurepip). Falling back to --without-pip + get-pip.py" >&2
+  python -m venv .venv_h100 --without-pip
+  if command -v curl >/dev/null 2>&1; then
+    curl -sSfL https://bootstrap.pypa.io/get-pip.py | .venv_h100/bin/python -
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- https://bootstrap.pypa.io/get-pip.py | .venv_h100/bin/python -
+  else
+    echo "[train_debug] Need curl or wget to bootstrap pip." >&2
+    exit 1
+  fi
+fi
+
 # shellcheck disable=SC1091
 source .venv_h100/bin/activate
 

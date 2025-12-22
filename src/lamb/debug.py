@@ -340,11 +340,17 @@ def debug_reproduce_clara(
         gold_scores_t = probs0.gather(-1, gold_idx.unsqueeze(-1)).squeeze(-1)
         gold_scores = gold_scores_t.cpu().tolist()
 
-    # Compute accuracy
-    matches = [
-        int(pred_next[i] == gold_next[i]) for i in range(min(len(gold_next), len(pred_next)))
-    ]
-    acc = (sum(matches) / len(matches)) if matches else 0.0
+    # Compute accuracy only on answer tokens (where labels != -100)
+    # labels are aligned with input_ids, but we're predicting next tokens
+    # So we need to check labels[1:] against our predictions
+    valid_mask = labels[0][1:] != -100  # Skip first position
+    if valid_mask.any():
+        valid_indices = valid_mask.nonzero(as_tuple=True)[0].tolist()
+        matches = [int(pred_next[i] == gold_next[i]) for i in valid_indices if i < len(pred_next)]
+        acc = (sum(matches) / len(matches)) if matches else 0.0
+    else:
+        matches = []
+        acc = 0.0
 
     # Compute loss on answer tokens only
     valid_mask = labels[0] != -100

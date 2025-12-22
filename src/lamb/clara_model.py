@@ -282,7 +282,7 @@ class ClaraModel(nn.Module):
                     message=r"Already found a `peft_config` attribute in the model\.",
                     category=UserWarning,
                 )
-                self.base_model.add_adapter(decoder_config, "decoder_adapter")
+                self.base_model.add_adapter("decoder_adapter", decoder_config)
 
             print(
                 f"[CLaRa] Added decoder adapter for Unsloth (encoder r={self.config.encoder_lora_rank}, decoder r={self.config.decoder_lora_rank})"

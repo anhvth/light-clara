@@ -487,12 +487,53 @@ def train_stage1(
                 raise
 
         if (batch_idx + 1) % config.gradient_accumulation_steps == 0:
+            # Check gradients for NaN/Inf before stepping
+            grad_ok = True
+            if nan_guard:
+                for p in model.get_trainable_params():
+                    if p.grad is not None and not torch.isfinite(p.grad).all():
+                        grad_ok = False
+                        break
+                if not grad_ok:
+                    skipped_non_finite += 1
+                    print(
+                        f"\x1b[91m[NaNGuard] Non-finite gradients at step={global_step} batch={batch_idx} (skipped={skipped_non_finite})\x1b[0m"
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    continue
+
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.get_trainable_params(), config.max_grad_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.get_trainable_params(), config.max_grad_norm
+            )
+
+            # Skip step if grad norm is non-finite (can happen even after clipping)
+            if nan_guard and not torch.isfinite(grad_norm):
+                skipped_non_finite += 1
+                print(
+                    f"\x1b[91m[NaNGuard] Non-finite grad_norm={grad_norm} at step={global_step} batch={batch_idx} (skipped={skipped_non_finite})\x1b[0m"
+                )
+                optimizer.zero_grad(set_to_none=True)
+                continue
 
             optimizer.step()
             optimizer.zero_grad()
             global_step += 1
+
+            # Check parameters for NaN/Inf after step (indicates optimizer instability)
+            if nan_guard:
+                params_ok = True
+                for p in model.get_trainable_params():
+                    if not torch.isfinite(p).all():
+                        params_ok = False
+                        break
+                if not params_ok:
+                    print(
+                        f"\x1b[91m[NaNGuard] CRITICAL: Model parameters became NaN/Inf after optimizer step={global_step}!\x1b[0m"
+                    )
+                    print(
+                        "\x1b[91m[NaNGuard] This usually means learning_rate is too high. Try 1e-5 or lower.\x1b[0m"
+                    )
 
             # Track metrics
             running_qa_loss += qa_loss.item()

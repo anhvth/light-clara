@@ -47,7 +47,7 @@ python -m lamb.cli \
   --batch_size 1 \
   --max_steps 1000 \
   --save_steps 999 \
-  --learning_rate 0.0001 \
+  --learning_rate 0.00002 \
   --mse_weight 0.1 \
   --checkpoint_dir checkpoints/debug_demo \
   --generation_top_k 20 \

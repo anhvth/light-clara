@@ -501,8 +501,9 @@ class ClaraModel(nn.Module):
         embed_layer = self.base_model.get_input_embeddings()
 
         # Get base embeddings for all tokens
+        # Clone to avoid in-place modification of leaf variable
+        inputs_embeds = embed_layer(input_ids).clone()  # [batch, seq_len, hidden_size]
 
-        inputs_embeds = embed_layer(input_ids)  # [batch, seq_len, hidden_size]
         # Find positions of memory tokens and replace
         mem_token_ids_set = set(self.mem_token_ids.tolist())
         replaced = 0

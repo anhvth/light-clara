@@ -66,24 +66,27 @@ def build_qa_prompt(
 ) -> tuple[str, int]:
     """Build QA prompt with memory token placeholders.
 
+    Question is placed in assistant section to make it trainable.
+
     Returns:
-        (prompt_text, prompt_length) where prompt_length is tokens before answer
+        (prompt_text, prompt_length) where prompt_length is tokens before question+answer
     """
     mem_tokens_str = build_memory_token_string(num_docs, num_mem_tokens, sep_token=sep_token)
 
-    user_content = f"<background>\n{mem_tokens_str}\n</background>\n\nQuestion: {question}\n"
+    # User only provides background, question+answer are in assistant (trainable)
+    user_content = f"<background>\n{mem_tokens_str}\n</background>"
+    assistant_content = f"Question: {question}\nAnswer: {answer}"
 
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
-        {"role": "assistant", "content": answer},
+        {"role": "assistant", "content": assistant_content},
     ]
 
     full_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
     assert isinstance(full_text, str), f"Expected str, got {type(full_text)}"
 
-    # Compute prompt length (everything before answer)
-    # Find the assistant marker
+    # Compute prompt length (everything before assistant section)
     assistant_marker = "<|im_start|>assistant\n"
     if assistant_marker not in full_text:
         assistant_marker = "assistant\n"

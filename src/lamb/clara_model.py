@@ -396,10 +396,11 @@ class ClaraModel(nn.Module):
             if param.requires_grad:
                 trainable.append(param)
 
-        # Compressor parameters
-        for param in self.compressor.parameters():
-            if param.requires_grad:
-                trainable.append(param)
+        # Compressor parameters (if using custom compression)
+        if self.compressor is not None:
+            for param in self.compressor.parameters():
+                if param.requires_grad:
+                    trainable.append(param)
 
         return trainable
 
@@ -411,8 +412,9 @@ class ClaraModel(nn.Module):
         # Save LoRA adapters
         self.base_model.save_pretrained(path)
 
-        # Save compressor
-        torch.save(self.compressor.state_dict(), os.path.join(path, "compressor.pt"))
+        # Save compressor (if using custom compression)
+        if self.compressor is not None:
+            torch.save(self.compressor.state_dict(), os.path.join(path, "compressor.pt"))
 
         # Save tokenizer (with memory tokens)
         self.tokenizer.save_pretrained(path)
@@ -440,9 +442,9 @@ class ClaraModel(nn.Module):
         # Load LoRA adapters
         # (PEFT handles this automatically when we loaded from pretrained)
 
-        # Load compressor
+        # Load compressor (if using custom compression)
         compressor_path = os.path.join(path, "compressor.pt")
-        if os.path.exists(compressor_path):
+        if model.compressor is not None and os.path.exists(compressor_path):
             model.compressor.load_state_dict(
                 torch.load(compressor_path, map_location=config.device)
             )

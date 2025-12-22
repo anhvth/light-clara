@@ -144,6 +144,10 @@ class ClaraModel(nn.Module):
 
     def _add_lora_adapters(self) -> None:
         """Add LoRA adapters for encoder and decoder."""
+        if getattr(self.base_model, "peft_config", None) is not None:
+            print("[CLaRa] Existing PEFT config detected; skipping LoRA adapter registration")
+            return
+
         target_modules = [
             "q_proj",
             "k_proj",

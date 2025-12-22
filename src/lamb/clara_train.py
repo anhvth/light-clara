@@ -6,7 +6,7 @@ import os
 import re
 import sys
 import time
-from typing import Any
+from typing import IO, Any, cast
 
 import torch
 from torch.utils.data import DataLoader
@@ -76,8 +76,14 @@ def train_stage1(
         f"[Train Stage 1] Losses: QA={config.qa_weight}, Paraphrase={config.paraphrase_weight}, MSE={config.mse_weight if config.use_mse_loss else 0}"
     )
     if config.debug_mode:
+        debug_batch_interval = config.debug_every_steps * max(1, config.gradient_accumulation_steps)
+        suffix = (
+            f" ({debug_batch_interval} dataloader batches)"
+            if debug_batch_interval != config.debug_every_steps
+            else ""
+        )
         print(
-            f"\x1b[92m[Debug Mode] Enabled - will show color-coded tokens every {config.debug_every_steps} steps\x1b[0m"
+            f"\x1b[92m[Debug Mode] Enabled - will show color-coded tokens every {config.debug_every_steps} optimizer step(s){suffix}\x1b[0m"
         )
 
     # Setup optimizer with different learning rates:
@@ -321,7 +327,7 @@ def train_stage1(
                     buf = io.StringIO()
                     tee = _Tee(sys.stdout, buf)
                     try:
-                        with contextlib.redirect_stdout(tee):
+                        with contextlib.redirect_stdout(cast(IO[str], tee)):
                             debug_reproduce_clara(model, batch, config, sample_idx=debug_idx)
                     except Exception as e:
                         print(f"\x1b[91m[Debug] Generation failed: {e}\x1b[0m")

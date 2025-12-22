@@ -9,7 +9,8 @@ Supports multi-stage training:
 
 import argparse
 import platform
-from dataclasses import MISSING, fields
+from collections.abc import Sequence
+from dataclasses import MISSING, Field, fields
 from typing import Any
 
 try:
@@ -95,7 +96,7 @@ def prepare_dataset(config: ClaraConfig) -> list[dict[str, Any]]:
     return dataset
 
 
-def _print_config(config_fields: list, config: ClaraConfig) -> None:
+def _print_config(config_fields: Sequence[Field[Any]], config: ClaraConfig) -> None:
     if tabulate is None:
         print("[CLaRa] Install tabulate (uv add tabulate) to see the config table.")
         return

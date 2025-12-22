@@ -12,7 +12,10 @@ import torch
 
 # Unsloth must be imported before transformers/peft for optimizations
 try:
-    from unsloth import FastLanguageModel
+    # Suppress the import order warning since we're already importing before transformers
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*Unsloth should be imported before.*")
+        from unsloth import FastLanguageModel
 
     UNSLOTH_AVAILABLE = True
 except ImportError:
@@ -280,7 +283,7 @@ class ClaraModel(nn.Module):
                     message=r"Already found a `peft_config` attribute in the model\.",
                     category=UserWarning,
                 )
-                self.base_model.add_adapter("decoder_adapter", peft_config=decoder_config)
+                self.base_model.add_adapter("decoder_adapter", decoder_config)
 
             print(
                 f"[CLaRa] Added decoder adapter for Unsloth (encoder r={self.config.encoder_lora_rank}, decoder r={self.config.decoder_lora_rank})"
@@ -318,7 +321,7 @@ class ClaraModel(nn.Module):
             target_modules=target_modules,
         )
         if "encoder_adapter" not in existing_adapters:
-            self.base_model.add_adapter("encoder_adapter", peft_config=encoder_config)
+            self.base_model.add_adapter("encoder_adapter", encoder_config)
 
         # Decoder adapter (for generation)
         decoder_config = LoraConfig(
@@ -338,7 +341,7 @@ class ClaraModel(nn.Module):
                     message=r"Already found a `peft_config` attribute in the model\.",
                     category=UserWarning,
                 )
-                self.base_model.add_adapter("decoder_adapter", peft_config=decoder_config)
+                self.base_model.add_adapter("decoder_adapter", decoder_config)
 
         print(
             f"[CLaRa] Added LoRA adapters (encoder r={self.config.encoder_lora_rank}, decoder r={self.config.decoder_lora_rank})"

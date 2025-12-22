@@ -5,10 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import torch
 from transformers import AutoTokenizer
 
-from lamb.clara_collate import build_memory_token_string, build_original_qa_prompt
+from lamb.clara_collate import build_original_qa_prompt
 from lamb.config import ClaraConfig
 
 

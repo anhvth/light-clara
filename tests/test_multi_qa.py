@@ -6,7 +6,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 # Import only what we need to avoid triggering config table
-import torch
 from transformers import AutoTokenizer
 
 
@@ -131,7 +130,7 @@ def test_single_qa_prompt_building():
     qa_count = prompt_text.count("Question:")
     assert qa_count == 1, f"Expected 1 QA pair, found {qa_count}"
 
-    print(f"\n✓ Single QA prompt works correctly")
+    print("\n✓ Single QA prompt works correctly")
 
 
 if __name__ == "__main__":

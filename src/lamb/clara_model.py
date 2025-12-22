@@ -254,6 +254,8 @@ class ClaraModel(nn.Module):
                 self.base_model.peft_config["encoder_adapter"] = self.base_model.peft_config.pop(
                     "default"
                 )
+                # Update active adapter to the renamed one
+                self.base_model.set_adapter("encoder_adapter")
                 print("[CLaRa] Renamed Unsloth default adapter to encoder_adapter")
 
             # Add decoder adapter

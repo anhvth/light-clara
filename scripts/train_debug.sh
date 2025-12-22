@@ -1,3 +1,4 @@
+export LAMB_DETECT_ANOMALY=1
 uv run lamb \
   --stage stage1 \
   --dataset_limit 100000 \

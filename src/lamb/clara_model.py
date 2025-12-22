@@ -215,7 +215,19 @@ class ClaraModel(nn.Module):
             self.sep_token_id = None
 
         # Resize model embeddings
+        old_vocab_size = self.base_model.get_input_embeddings().num_embeddings
         self.base_model.resize_token_embeddings(len(self.tokenizer))
+        new_vocab_size = self.base_model.get_input_embeddings().num_embeddings
+
+        print(
+            f"[CLaRa] Resized embeddings: {old_vocab_size} -> {new_vocab_size} (tokenizer: {len(self.tokenizer)})"
+        )
+
+        # Verify sizes match
+        if new_vocab_size != len(self.tokenizer):
+            print(
+                f"[CLaRa] WARNING: Embedding size ({new_vocab_size}) != tokenizer size ({len(self.tokenizer)})"
+            )
 
         # Initialize new token embeddings randomly
         vocab_size_original = len(self.tokenizer) - num_added

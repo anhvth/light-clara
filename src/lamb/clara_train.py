@@ -373,18 +373,30 @@ def train_stage1(
             # Additional debugging: check inputs to forward_with_memory
             if nan_guard and batch_idx <= 2:
                 print(f"[NaNGuard] Forward inputs batch={batch_idx}:")
-                print(f"  dec_input_ids: shape={dec_input_ids.shape} min={dec_input_ids.min().item()} max={dec_input_ids.max().item()}")
+                print(
+                    f"  dec_input_ids: shape={dec_input_ids.shape} min={dec_input_ids.min().item()} max={dec_input_ids.max().item()}"
+                )
                 print(f"  vocab_size: {model.tokenizer.vocab_size}")
-                print(f"  any out_of_bounds: {(dec_input_ids >= model.tokenizer.vocab_size).any().item()}")
-                print(f"  dec_attention_mask: shape={dec_attention_mask.shape} finite={torch.isfinite(dec_attention_mask.float()).all()}")
-                print(f"  labels: shape={labels.shape} min={labels.min().item()} max={labels.max().item()}")
-                print(f"  batch_memory_embeddings_tensor: shape={batch_memory_embeddings_tensor.shape} finite={torch.isfinite(batch_memory_embeddings_tensor).all()}")
-                
+                print(
+                    f"  any out_of_bounds: {(dec_input_ids >= model.tokenizer.vocab_size).any().item()}"
+                )
+                print(
+                    f"  dec_attention_mask: shape={dec_attention_mask.shape} finite={torch.isfinite(dec_attention_mask.float()).all()}"
+                )
+                print(
+                    f"  labels: shape={labels.shape} min={labels.min().item()} max={labels.max().item()}"
+                )
+                print(
+                    f"  batch_memory_embeddings_tensor: shape={batch_memory_embeddings_tensor.shape} finite={torch.isfinite(batch_memory_embeddings_tensor).all()}"
+                )
+
                 # Check for specific problematic values
-                if hasattr(model, 'mem_token_ids'):
+                if hasattr(model, "mem_token_ids"):
                     print(f"  mem_token_ids: {model.mem_token_ids}")
-                    print(f"  mem_tokens in dec_input_ids: {any(tid in dec_input_ids for tid in model.mem_token_ids)}")
-                
+                    print(
+                        f"  mem_tokens in dec_input_ids: {any(tid in dec_input_ids for tid in model.mem_token_ids)}"
+                    )
+
                 # Print first few tokens to see the sequence structure
                 print(f"  dec_input_ids[0][:20]: {dec_input_ids[0][:20].tolist()}")
                 print(f"  labels[0][:20]: {labels[0][:20].tolist()}")
@@ -401,13 +413,35 @@ def train_stage1(
             if nan_guard and batch_idx <= 2:
                 decoder_loss = cast(torch.Tensor, outputs["loss"])
                 print(f"[NaNGuard] Forward outputs batch={batch_idx}:")
-                print(f"  decoder_loss: {decoder_loss.item()} finite={torch.isfinite(decoder_loss).all()}")
-                if "logits" in outputs:
+                print(
+                    f"  decoder_loss: {decoder_loss.item()} finite={torch.isfinite(decoder_loss).all()}"
+                )
+                if "logits" in outputs and outputs["logits"] is not None:
                     logits = outputs["logits"]
-                    print(f"  logits: shape={logits.shape} finite={torch.isfinite(logits).all()} min={logits.min().item():.3f} max={logits.max().item():.3f}")
+                    print(
+                        f"  logits: shape={logits.shape} finite={torch.isfinite(logits).all()} min={logits.min().item():.3f} max={logits.max().item():.3f}"
+                    )
                     # Check if any logits are extremely large (which can cause NaN in softmax/CE)
                     if logits.abs().max() > 100:
-                        print(f"  WARNING: Very large logits detected! max_abs={logits.abs().max().item():.3f}")
+                        print(
+                            f"  WARNING: Very large logits detected! max_abs={logits.abs().max().item():.3f}"
+                        )
+                else:
+                    print("  logits: None or not present")
+
+                # CRITICAL: Check for out-of-bounds token IDs
+                out_of_bounds = dec_input_ids >= model.tokenizer.vocab_size
+                if out_of_bounds.any():
+                    print(
+                        f"  CRITICAL: Found {out_of_bounds.sum().item()} out-of-bounds token IDs!"
+                    )
+                    oob_tokens = dec_input_ids[out_of_bounds]
+                    print(f"  Out-of-bounds tokens: {oob_tokens[:10].tolist()}...")
+                    print("  This will cause NaN in embedding lookup!")
+                    # Stop training immediately - this needs to be fixed
+                    raise ValueError(
+                        f"Out-of-bounds token IDs detected: max_id={dec_input_ids.max().item()} >= vocab_size={model.tokenizer.vocab_size}"
+                    )
 
             decoder_loss = cast(torch.Tensor, outputs["loss"])
 

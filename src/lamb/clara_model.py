@@ -529,34 +529,21 @@ class ClaraModel(nn.Module):
             return base_embeds
 
         # Create replacement tensor without in-place operations
-        # Clone base embeddings to avoid modifying original computation graph
+        # Use indexing assignment approach that's autograd-safe
         inputs_embeds = base_embeds.clone()
 
-        # Build replacement mask and gather memory embeddings
-        # This avoids in-place operations that can break autograd
-        replacement_mask = torch.zeros(
-            batch_size, seq_len, dtype=torch.bool, device=base_embeds.device
-        )
-        for b, s in zip(batch_indices, seq_indices, strict=True):
-            replacement_mask[b, s] = True
+        # Build indices tensors for advanced indexing
+        batch_idx_tensor = torch.tensor(batch_indices, device=base_embeds.device, dtype=torch.long)
+        seq_idx_tensor = torch.tensor(seq_indices, device=base_embeds.device, dtype=torch.long)
+        mem_idx_tensor = torch.tensor(mem_indices, device=base_embeds.device, dtype=torch.long)
 
-        # Prepare memory embeddings in the correct positions
-        mem_embeds_flat = memory_embeddings.reshape(-1, memory_embeddings.size(-1))
-        assert len(batch_indices) == mem_embeds_flat.size(0), "Mismatch in memory token count"
+        # Gather the memory embeddings to replace
+        mem_to_replace = memory_embeddings[batch_idx_tensor, mem_idx_tensor]
 
-        # Use scatter operation to replace embeddings (no in-place modification)
-        inputs_embeds = torch.where(
-            replacement_mask.unsqueeze(-1).expand_as(base_embeds),
-            torch.zeros_like(base_embeds).scatter_(
-                1,
-                torch.tensor(
-                    [[s for b, s in zip(batch_indices, seq_indices, strict=True) if b == batch_idx]
-                     for batch_idx in range(batch_size)],
-                    device=base_embeds.device
-                ).unsqueeze(-1).expand(-1, -1, base_embeds.size(-1)),
-                mem_embeds_flat.view(batch_size, -1, mem_embeds_flat.size(-1))
-            ),
-            base_embeds
+        # Use index_put_ which is the proper PyTorch way for this operation
+        # Note: index_put_ is in-place, but it's on a cloned tensor that's not in the graph yet
+        inputs_embeds = inputs_embeds.index_put(
+            (batch_idx_tensor, seq_idx_tensor), mem_to_replace, accumulate=False
         )
 
         return inputs_embeds

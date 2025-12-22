@@ -12,6 +12,51 @@ def _masked_mean(x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
     return (x * mask_f.unsqueeze(-1)).sum(dim=1) / denom
 
 
+def compute_mse_loss_original(
+    hidden_states: torch.Tensor,
+    input_ids: torch.Tensor,
+    mem_token_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Compute MSE loss matching original CLaRa: mean(mem) vs mean(non-mem).
+
+    Args:
+        hidden_states: [batch, seq_len, hidden_size] - includes memory token positions
+        input_ids: [batch, seq_len] - token IDs with memory tokens at end
+        mem_token_ids: [num_mem_tokens] - IDs of memory tokens
+        attention_mask: [batch, seq_len]
+
+    Returns:
+        mse_loss: scalar
+    """
+    # Create mask for memory token positions
+    mem_token_ids_set = set(mem_token_ids.tolist())
+    batch_size, seq_len, _hidden_size = hidden_states.shape
+
+    mem_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=hidden_states.device)
+    for i in range(batch_size):
+        for j in range(seq_len):
+            if input_ids[i, j].item() in mem_token_ids_set:
+                mem_mask[i, j] = True
+
+    # Combine with attention mask
+    attn = attention_mask.bool()
+    mem_mask = mem_mask & attn
+    non_mem_mask = (~mem_mask) & attn
+
+    # Compute means
+    mem_len = mem_mask.sum(dim=1, keepdim=True).clamp_min(1.0)
+    non_mem_len = non_mem_mask.sum(dim=1, keepdim=True).clamp_min(1.0)
+
+    mem_sum = (hidden_states * mem_mask.unsqueeze(-1)).sum(dim=1)
+    non_mem_sum = (hidden_states * non_mem_mask.unsqueeze(-1)).sum(dim=1)
+
+    mem_mean = mem_sum / mem_len
+    non_mem_mean = non_mem_sum / non_mem_len
+
+    return functional.mse_loss(non_mem_mean, mem_mean, reduction="mean")
+
+
 class AttentionCompressor(nn.Module):
     def __init__(self, dim: int = 1024, num_heads: int = 8, target_len: int = 8):
         super().__init__()

@@ -325,14 +325,44 @@ def train_stage1(
 
         # MSE loss between compressed and encoder representations
         if config.use_mse_loss:
-            mse_loss = (
-                model.compressor.compute_mse_loss(
-                    encoder_hidden_states,
-                    memory_embeddings,
-                    attention_mask=doc_attention_mask,
+            if config.use_clara_original:
+                # Original CLaRa MSE: mean(mem_tokens) vs mean(non_mem_tokens)
+                # Need to reconstruct input_ids with memory tokens
+                # encoder_hidden_states has shape [batch*docs, doc_seq_len + num_mem_tokens, hidden_size]
+                # We need the corresponding input_ids
+                num_mem_tokens = config.compress_rate
+                batch_size = doc_input_ids.size(0)
+                mem_token_ids = (
+                    model.mem_token_ids.unsqueeze(0).expand(batch_size, -1).to(doc_input_ids.device)
                 )
-                * config.mse_weight
-            )
+                input_ids_with_mem = torch.cat([doc_input_ids, mem_token_ids], dim=1)
+                attention_mask_with_mem = torch.cat(
+                    [
+                        doc_attention_mask,
+                        torch.ones(batch_size, num_mem_tokens, device=doc_attention_mask.device),
+                    ],
+                    dim=1,
+                )
+
+                mse_loss = (
+                    compute_mse_loss_original(
+                        encoder_hidden_states,
+                        input_ids_with_mem,
+                        model.mem_token_ids,
+                        attention_mask_with_mem,
+                    )
+                    * config.mse_weight
+                )
+            else:
+                # Custom MSE: mean-pooled comparison
+                mse_loss = (
+                    model.compressor.compute_mse_loss(
+                        encoder_hidden_states,
+                        memory_embeddings,
+                        attention_mask=doc_attention_mask,
+                    )
+                    * config.mse_weight
+                )
 
         # Total loss
         total_loss = qa_loss + paraphrase_loss + mse_loss

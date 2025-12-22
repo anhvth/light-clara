@@ -16,7 +16,7 @@ def build_memory_token_string(num_docs: int, num_mem_tokens: int, sep_token: str
     for _doc_idx in range(num_docs):
         mem_tokens = [f"<mem_{mem_idx}>" for mem_idx in range(num_mem_tokens)]
         doc_tokens.append("".join(mem_tokens))
-    
+
     if sep_token:
         return sep_token.join(doc_tokens) + sep_token
     else:
@@ -44,7 +44,7 @@ def test_multi_qa_data_normalization():
     assert isinstance(example.answer, list), "Answers should be preserved as list"
     assert len(example.question) == 3, f"Expected 3 questions, got {len(example.question)}"
     assert len(example.answer) == 3, f"Expected 3 answers, got {len(example.answer)}"
-    
+
     print("✓ Data normalization preserves multiple QA pairs")
     print(f"  Questions: {example.question}")
     print(f"  Answers: {example.answer}")
@@ -65,7 +65,7 @@ def test_single_qa_data_normalization():
     assert isinstance(example.answer, str), "Single answer should be string"
     assert example.question == "What is the capital?"
     assert example.answer == "Paris"
-    
+
     print("✓ Single QA pairs still work correctly")
 
 
@@ -102,7 +102,7 @@ def test_multi_qa_prompt_building():
 
     # Verify they're in assistant turn
     assert "<|im_start|>assistant" in prompt_text
-    
+
     # Count QA pairs
     qa_count = prompt_text.count("Question:")
     assert qa_count == 3, f"Expected 3 QA pairs, found {qa_count}"
@@ -127,7 +127,7 @@ def test_single_qa_prompt_building():
 
     assert "Question: What is the capital?" in prompt_text
     assert "Answer: Paris" in prompt_text
-    
+
     qa_count = prompt_text.count("Question:")
     assert qa_count == 1, f"Expected 1 QA pair, found {qa_count}"
 

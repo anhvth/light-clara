@@ -22,7 +22,7 @@ def test_separator_in_prompt():
     )
 
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-    
+
     # Add <SEP> token
     tokenizer.add_tokens(["<SEP>"] + [f"<mem_{i}>" for i in range(8)], special_tokens=True)
 
@@ -44,7 +44,9 @@ def test_separator_in_prompt():
 
     # Verify separators are present
     assert "<SEP>" in prompt_text, "Separator not found in prompt!"
-    assert prompt_text.count("<SEP>") == 3, f"Expected 3 separators, found {prompt_text.count('<SEP>')}"
+    assert prompt_text.count("<SEP>") == 3, (
+        f"Expected 3 separators, found {prompt_text.count('<SEP>')}"
+    )
 
     # Verify memory tokens are present
     assert "<mem_0>" in prompt_text
@@ -54,7 +56,7 @@ def test_separator_in_prompt():
     tokens = tokenizer.encode(prompt_text, add_special_tokens=False)
     sep_id = tokenizer.convert_tokens_to_ids("<SEP>")
     sep_count = tokens.count(sep_id)
-    
+
     print(f"\n✓ Prompt contains {prompt_text.count('<SEP>')} <SEP> tokens (text)")
     print(f"✓ Tokenized prompt contains {sep_count} <SEP> tokens (IDs)")
     print(f"✓ Prompt length (before answer): {prompt_len} tokens")

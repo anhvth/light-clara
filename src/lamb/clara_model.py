@@ -92,13 +92,20 @@ class ClaraModel(nn.Module):
 
         # Create document compressor
         hidden_size = self.base_model.config.hidden_size
-        self.compressor = DocumentCompressor(
-            hidden_size=hidden_size,
-            num_memory_tokens=config.compress_rate,
-            use_mlp=config.use_compressor_mlp,
-            mlp_hidden_dim=config.compressor_mlp_hidden_dim,
-            encoder_pool_method=config.encoder_pool_method,
-        ).to(device=device, dtype=dtype)
+
+        # Use original compression (decoder with mem tokens in input) or custom (cross-attention)
+        if config.use_clara_original:
+            self.compressor = None  # Original method doesn't use separate compressor
+            print("[CLaRa] Using original compression: memory tokens in input sequence")
+        else:
+            self.compressor = DocumentCompressor(
+                hidden_size=hidden_size,
+                num_memory_tokens=config.compress_rate,
+                use_mlp=config.use_compressor_mlp,
+                mlp_hidden_dim=config.compressor_mlp_hidden_dim,
+                encoder_pool_method=config.encoder_pool_method,
+            ).to(device=device, dtype=dtype)
+            print("[CLaRa] Using custom compression: cross-attention pooling")
 
         print(f"[CLaRa] Model initialized. Stage: {config.stage}")
 
@@ -224,7 +231,17 @@ class ClaraModel(nn.Module):
 
         Returns:
             memory_embeddings: [batch * num_docs, num_memory_tokens, hidden_size]
+            encoder_hidden_states: [batch * num_docs, seq_len, hidden_size]
         """
+        if self.config.use_clara_original:
+            return self._compress_original(doc_input_ids, doc_attention_mask)
+        else:
+            return self._compress_custom(doc_input_ids, doc_attention_mask)
+
+    def _compress_custom(
+        self, doc_input_ids: torch.Tensor, doc_attention_mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Custom compression: cross-attention pooling (our method)."""
         # Set encoder adapter
         self.base_model.set_adapter("encoder_adapter")
 
@@ -240,13 +257,59 @@ class ClaraModel(nn.Module):
         # Get last hidden state
         encoder_hidden_states = encoder_outputs.hidden_states[-1]
 
-        # Compress to memory embeddings
+        # Compress to memory embeddings using cross-attention
         memory_embeddings = self.compressor(
             encoder_hidden_states,
             attention_mask=doc_attention_mask,
         )
 
         return memory_embeddings, encoder_hidden_states
+
+    def _compress_original(
+        self, doc_input_ids: torch.Tensor, doc_attention_mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Original CLaRa compression: append memory tokens to input, extract their embeddings."""
+        # Append memory token IDs to input sequence
+        num_mem_tokens = self.config.compress_rate
+        batch_size = doc_input_ids.size(0)
+
+        # Create memory token IDs [batch, num_mem_tokens]
+        mem_token_ids = (
+            self.mem_token_ids.unsqueeze(0).expand(batch_size, -1).to(doc_input_ids.device)
+        )
+
+        # Concatenate: [batch, doc_seq_len + num_mem_tokens]
+        input_ids_with_mem = torch.cat([doc_input_ids, mem_token_ids], dim=1)
+        attention_mask_with_mem = torch.cat(
+            [
+                doc_attention_mask,
+                torch.ones(batch_size, num_mem_tokens, device=doc_attention_mask.device),
+            ],
+            dim=1,
+        )
+
+        # Set encoder adapter
+        self.base_model.set_adapter("encoder_adapter")
+
+        # Forward through decoder with memory tokens in sequence
+        with torch.set_grad_enabled(self.training):
+            outputs = self.base_model(
+                input_ids=input_ids_with_mem,
+                attention_mask=attention_mask_with_mem,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+
+        # Get last hidden state: [batch, doc_seq_len + num_mem_tokens, hidden_size]
+        hidden_states = outputs.hidden_states[-1]
+
+        # Extract ONLY memory token positions (last num_mem_tokens)
+        memory_embeddings = hidden_states[
+            :, -num_mem_tokens:, :
+        ]  # [batch, num_mem_tokens, hidden_size]
+
+        # Return full hidden states for MSE loss computation
+        return memory_embeddings, hidden_states
 
     def forward_with_memory(
         self,

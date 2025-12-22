@@ -67,16 +67,14 @@ class ClaraModel(nn.Module):
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, trust_remote_code=True)
-        if getattr(config, "tokenizer_template", ""):
-            template_name = str(config.tokenizer_template)
+        if getattr(config, "chat_template", ""):
+            template_name = str(config.chat_template)
             temp_tokenizer = AutoTokenizer.from_pretrained(
                 template_name,
                 trust_remote_code=True,
             )
             if not getattr(temp_tokenizer, "chat_template", None):
-                raise ValueError(
-                    f"tokenizer_template={template_name!r} did not provide a chat_template"
-                )
+                raise ValueError(f"chat_template={template_name!r} did not provide a chat_template")
             self.tokenizer.chat_template = temp_tokenizer.chat_template
             print(f"[CLaRa] tokenizer.chat_template copied from {template_name}")
         if self.tokenizer.pad_token is None:
@@ -111,9 +109,23 @@ class ClaraModel(nn.Module):
         # Create memory token strings
         mem_tokens = [f"<mem_{i}>" for i in range(num_mem_tokens)]
 
+        # Add separator token if using original CLaRa format
+        special_tokens = mem_tokens.copy()
+        if self.config.use_clara_original:
+            special_tokens.append("<SEP>")
+
         # Add to tokenizer
-        num_added = self.tokenizer.add_tokens(mem_tokens, special_tokens=True)
+        num_added = self.tokenizer.add_tokens(special_tokens, special_tokens=True)
         print(f"[CLaRa] Added {num_added} memory tokens to vocabulary")
+
+        # Store separator token if added
+        if self.config.use_clara_original:
+            self.sep_token = "<SEP>"
+            self.sep_token_id = self.tokenizer.convert_tokens_to_ids("<SEP>")
+            print(f"[CLaRa] Added <SEP> separator token (id={self.sep_token_id})")
+        else:
+            self.sep_token = None
+            self.sep_token_id = None
 
         # Resize model embeddings
         self.base_model.resize_token_embeddings(len(self.tokenizer))

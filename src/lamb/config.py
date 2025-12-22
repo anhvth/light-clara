@@ -50,10 +50,13 @@ class ClaraConfig:
 
     # Tokenizer
     # If set, loads this tokenizer and copies its chat_template onto the main tokenizer.
-    tokenizer_template: str = ""
+    chat_template: str = ""
 
     # Training stage
     stage: str = "stage1"  # stage1, stage1_2, stage2
+    use_clara_original: bool = False  # Use Apple's original stage-1 data + loss formatting
+    use_sep_token: bool = False  # Insert <SEP> separator between documents (original CLaRa)
+    different_mem_tokens: bool = True  # Use unique <MEM0>, <MEM1> vs repeated <MEM>
 
     # Compression
     compress_rate: int = 32  # Number of memory tokens per document

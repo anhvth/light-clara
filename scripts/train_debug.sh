@@ -16,4 +16,7 @@ python -m lamb.cli \
   --debug_every_steps 1 \
   --debug_num_samples 1 \
   --debug_repeat_dataset 100 \
-  --report_to tensorboard
+  --report_to tensorboard \
+  --use_clara_original True
+  
+  # --chat_template Qwen/Qwen3-4B-Instruct-2507 \

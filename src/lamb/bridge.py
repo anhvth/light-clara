@@ -46,14 +46,6 @@ class AttentionCompressor(nn.Module):
         return compressed  # Shape: (Batch, 8, 1024)
 
 
-# Usage
-# model = AttentionCompressor()
-# input_tensor = torch.randn(32, 128, 1024)  # Batch of 32
-# output = model(input_tensor)
-
-# print(output.shape)  # torch.Size([32, 8, 1024])
-
-
 class DocumentCompressor(nn.Module):
     """Compresses documents into fixed-size memory token embeddings.
 

@@ -80,6 +80,8 @@ def train_stage1(
     print(
         f"[Train Stage 1] Losses: QA={config.qa_weight}, Paraphrase={config.paraphrase_weight}, MSE={config.mse_weight if config.use_mse_loss else 0}"
     )
+    if config.use_clara_original:
+        print("[Train Stage 1] Using original CLaRa stage-1 formatting (data + loss)")
     if config.debug_mode:
         debug_batch_interval = config.debug_every_steps * max(1, config.gradient_accumulation_steps)
         suffix = (
@@ -149,6 +151,8 @@ def train_stage1(
         dec_max_length=config.max_seq_len,
         generation_top_k=config.generation_top_k,
         num_mem_tokens=config.compress_rate,
+        use_clara_original=config.use_clara_original,
+        use_sep_token=config.use_sep_token or config.use_clara_original,
     )
 
     dataloader = DataLoader(
@@ -251,32 +255,39 @@ def train_stage1(
             doc_input_ids, doc_attention_mask
         )
 
-        # Reshape memory embeddings to [batch, num_docs * compress_rate, hidden_size]
-        # Currently: [batch * total_docs, compress_rate, hidden_size]
-        # Need to split by num_docs_per_sample
-        batch_memory_embeddings = []
-        doc_offset = 0
-        for num_docs in num_docs_per_sample:
-            sample_mem = memory_embeddings[doc_offset : doc_offset + num_docs]
-            # Flatten: [num_docs, compress_rate, hidden_size] -> [num_docs * compress_rate, hidden_size]
-            sample_mem_flat = sample_mem.reshape(-1, sample_mem.size(-1))
-            batch_memory_embeddings.append(sample_mem_flat)
-            doc_offset += num_docs
+        if config.use_clara_original:
+            if len(set(num_docs_per_sample)) > 1:
+                raise ValueError("Original CLaRa format expects a fixed number of docs per sample")
+            num_docs = num_docs_per_sample[0] if num_docs_per_sample else 1
+            mem = memory_embeddings.reshape(batch_size, num_docs, -1, memory_embeddings.size(-1))
+            batch_memory_embeddings_tensor = mem.reshape(batch_size, -1, mem.size(-1))
+        else:
+            # Reshape memory embeddings to [batch, num_docs * compress_rate, hidden_size]
+            # Currently: [batch * total_docs, compress_rate, hidden_size]
+            # Need to split by num_docs_per_sample
+            batch_memory_embeddings = []
+            doc_offset = 0
+            for num_docs in num_docs_per_sample:
+                sample_mem = memory_embeddings[doc_offset : doc_offset + num_docs]
+                # Flatten: [num_docs, compress_rate, hidden_size] -> [num_docs * compress_rate, hidden_size]
+                sample_mem_flat = sample_mem.reshape(-1, sample_mem.size(-1))
+                batch_memory_embeddings.append(sample_mem_flat)
+                doc_offset += num_docs
 
-        # Pad to same length
-        max_mem_tokens = max(m.size(0) for m in batch_memory_embeddings)
-        padded_memory_embeddings = []
-        for mem_tensor in batch_memory_embeddings:
-            padded = mem_tensor
-            if padded.size(0) < max_mem_tokens:
-                pad_size = max_mem_tokens - padded.size(0)
-                pad = torch.zeros(
-                    pad_size, padded.size(1), dtype=padded.dtype, device=padded.device
-                )
-                padded = torch.cat([padded, pad], dim=0)
-            padded_memory_embeddings.append(padded)
+            # Pad to same length
+            max_mem_tokens = max(m.size(0) for m in batch_memory_embeddings)
+            padded_memory_embeddings = []
+            for mem_tensor in batch_memory_embeddings:
+                padded = mem_tensor
+                if padded.size(0) < max_mem_tokens:
+                    pad_size = max_mem_tokens - padded.size(0)
+                    pad = torch.zeros(
+                        pad_size, padded.size(1), dtype=padded.dtype, device=padded.device
+                    )
+                    padded = torch.cat([padded, pad], dim=0)
+                padded_memory_embeddings.append(padded)
 
-        batch_memory_embeddings_tensor = torch.stack(padded_memory_embeddings)
+            batch_memory_embeddings_tensor = torch.stack(padded_memory_embeddings)
 
         # Forward through decoder with memory embeddings
         outputs = model.forward_with_memory(
@@ -297,8 +308,11 @@ def train_stage1(
         # Main decoder loss (already computed)
         decoder_loss = outputs["loss"]
 
+        if config.use_clara_original:
+            qa_loss = decoder_loss * config.qa_weight
+            paraphrase_loss = torch.tensor(0.0, device=config.device)
         # Split into QA and paraphrase
-        if num_qa > 0 and num_paraphrase > 0:
+        elif num_qa > 0 and num_paraphrase > 0:
             # Mixed batch - approximate split
             qa_loss = decoder_loss * (num_qa / batch_size) * config.qa_weight
             paraphrase_loss = (

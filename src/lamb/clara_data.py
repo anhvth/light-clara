@@ -13,9 +13,9 @@ from huggingface_hub import hf_hub_download, list_repo_files
 @dataclass(frozen=True)
 class ClaraExample:
     data_type: str
-    question: str
+    question: str | list[str]  # Single string or list for multi-QA
     docs: list[str]
-    answer: str
+    answer: str | list[str]  # Single string or list for multi-QA
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -50,35 +50,53 @@ def normalize_clara_record(record: dict[str, Any]) -> ClaraExample:
 
     The upstream dataset has multiple stages/types; fields may vary slightly.
     We keep this tolerant so streaming + small debug subsets work reliably.
+
+    For stage-1 data: question and answer can be lists (multiple QA pairs per sample).
+    For other stages: typically single strings.
     """
 
     data_type = _as_str(record.get("data_type") or record.get("stage") or "unknown").strip()
 
-    question = _as_str(record.get("question") or record.get("query") or record.get("instruction"))
-    if isinstance(record.get("question"), list):
-        # Some stage-1 formats store question as a list.
-        q_list = _as_list_of_str(record.get("question"))
-        question = q_list[0] if q_list else ""
+    # Handle questions - keep as list if multiple, single string otherwise
+    question_raw = record.get("question") or record.get("query") or record.get("instruction")
+    if isinstance(question_raw, list):
+        # Stage-1 format: multiple questions per sample
+        q_list = _as_list_of_str(question_raw)
+        question = q_list if len(q_list) > 1 else (q_list[0] if q_list else "")
+    else:
+        question = _as_str(question_raw)
 
     docs = _as_list_of_str(record.get("docs") or record.get("documents") or record.get("context"))
 
-    # Answer fields differ by stage.
-    answer = _as_str(
+    # Handle answers - keep as list if multiple, single string otherwise
+    answer_raw = (
         record.get("gold_answer")
         or record.get("answer")
         or record.get("answers")
         or record.get("output")
-        or ""
     )
     if isinstance(record.get("answers"), list):
         a_list = _as_list_of_str(record.get("answers"))
-        answer = a_list[0] if a_list else ""
+        answer = a_list if len(a_list) > 1 else (a_list[0] if a_list else "")
+    else:
+        answer = _as_str(answer_raw)
+
+    # Clean up strings/lists
+    if isinstance(question, list):
+        question = [q.strip() for q in question if q.strip()]
+    else:
+        question = question.strip()
+
+    if isinstance(answer, list):
+        answer = [a.strip() for a in answer if a.strip()]
+    else:
+        answer = answer.strip()
 
     return ClaraExample(
         data_type=data_type or "unknown",
-        question=question.strip(),
+        question=question,
         docs=[d.strip() for d in docs if d.strip()],
-        answer=answer.strip(),
+        answer=answer,
     )
 
 

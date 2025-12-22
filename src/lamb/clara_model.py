@@ -286,8 +286,9 @@ class ClaraModel(nn.Module):
                 )
                 self.base_model.add_adapter("decoder_adapter", decoder_config)
 
-            # Enable both adapters for training
-            self.base_model.enable_adapters()
+            # Set both adapters as active for training
+            # This enables training for both encoder and decoder adapters simultaneously
+            self.base_model.set_adapter(["encoder_adapter", "decoder_adapter"])
 
             # Ensure all adapter parameters are trainable
             for name, param in self.base_model.named_parameters():

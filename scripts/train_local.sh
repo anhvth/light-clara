@@ -1,4 +1,4 @@
-python -m lamb.cli \
+torchrun --nproc_per_node=8 -m lamb.cli \
   --stage stage1 \
   --dataset_limit 100000 \
   --dataset_split test \

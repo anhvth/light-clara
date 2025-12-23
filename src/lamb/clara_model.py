@@ -142,6 +142,11 @@ class ClaraModel(nn.Module):
                 **model_kwargs,
             )
 
+        # Enable gradient checkpointing if requested (before PEFT)
+        if config.gradient_checkpointing:
+            self.base_model.gradient_checkpointing_enable()
+            print("[CLaRa] Enabled gradient checkpointing (standard PyTorch)")
+
         cast(torch.nn.Module, self.base_model).to(device=device)
 
     def _init_with_unsloth(self, config: ClaraConfig) -> None:
@@ -171,9 +176,9 @@ class ClaraModel(nn.Module):
         )
 
         # Add LoRA with Unsloth (creates default adapter)
-        # CRITICAL: Disable gradient checkpointing entirely (False)!
-        # Unsloth's gradient checkpointing/offloading breaks multi-forward-pass
-        # (encoder -> memory -> decoder -> backward) causing ALL LoRA grads to be NaN.
+        # CRITICAL: Keep use_gradient_checkpointing=False for Unsloth!
+        # Unsloth's gradient checkpointing breaks multi-forward-pass architecture.
+        # We'll enable standard PyTorch gradient checkpointing manually later.
         model = FastLanguageModel.get_peft_model(
             model,
             r=config.encoder_lora_rank,
@@ -181,16 +186,42 @@ class ClaraModel(nn.Module):
             lora_alpha=config.lora_alpha,
             lora_dropout=config.lora_dropout,
             bias="none",
-            use_gradient_checkpointing=False,  # Disabled to prevent gradient issues
+            use_gradient_checkpointing=False,  # Must be False for Unsloth
             random_state=42,
         )
 
         self.base_model = model
 
+        # Enable standard PyTorch gradient checkpointing if requested
+        # This must be done AFTER Unsloth setup to avoid their custom checkpointing
+        if config.gradient_checkpointing:
+            self._enable_gradient_checkpointing()
+            print("[CLaRa] Enabled gradient checkpointing (standard PyTorch)")
+
         # For Unsloth models, we need to manually add a second adapter for decoder
         # We'll rename the default adapter to encoder_adapter and add decoder_adapter
         # This is handled in a separate method after tokenizer setup
         self._unsloth_needs_decoder_adapter = True
+
+    def _enable_gradient_checkpointing(self) -> None:
+        """Enable standard PyTorch gradient checkpointing.
+
+        This is called after model initialization to avoid Unsloth's custom
+        gradient checkpointing which breaks multi-forward-pass architecture.
+        """
+        # Enable gradient checkpointing on the base transformer
+        if hasattr(self.base_model, "model"):
+            base_transformer = self.base_model.model
+        elif hasattr(self.base_model, "base_model"):
+            base_transformer = self.base_model.base_model
+        else:
+            base_transformer = self.base_model
+
+        if hasattr(base_transformer, "gradient_checkpointing_enable"):
+            base_transformer.gradient_checkpointing_enable()
+        elif hasattr(base_transformer, "enable_input_require_grads"):
+            # Fallback for some model types
+            base_transformer.enable_input_require_grads()
 
     def _add_memory_tokens(self) -> None:
         """Add memory tokens (<mem_0>, <mem_1>, ...) to tokenizer and model."""

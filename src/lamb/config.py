@@ -80,6 +80,7 @@ class ClaraConfig:
     # Data
     generation_top_k: int = 1  # Number of docs to compress per example
     max_seq_len: int = 1024  # Max decoder sequence length
+    gradient_checkpointing: bool = False  # Enable gradient checkpointing for large models
 
     # Training
     batch_size: int = 2

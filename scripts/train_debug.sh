@@ -38,7 +38,7 @@ export TORCH_COMPILE_DISABLE=1
 # export LAMB_ENV_DIAG=1
 # Set to 1 to bisect whether NaNs originate from the encoder path.
 # export LAMB_DETACH_MEMORY=1
-python -m lamb.cli \
+torchrun --nproc_per_node=8 -m lamb.cli \
   --stage stage1 \
   --dataset_limit 100000 \
   --dataset_split test \
